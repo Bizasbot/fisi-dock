@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Tested with Gentle Shell 4.8.0.
+
 ## 0.5.1
 
 ### Fixed
