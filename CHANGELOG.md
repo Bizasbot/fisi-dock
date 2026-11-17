@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- A narrow rail: when the host gives the side panel fewer than 44 columns it draws every section at most 40 columns wide (rows cut with an ellipsis) instead of nothing.
+
 ### Changed
 
 - Tested with Gentle Shell 4.8.0.

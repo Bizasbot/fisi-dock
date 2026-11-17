@@ -1177,6 +1177,26 @@ export function renderRail(model: PanelModel, width: number, options: PanelOptio
 	return Array.from({ length: rows }, (_, index) => paint(`${dividerCell(index, rows, peak)} ${padEnd(panel[index] ?? "", columns - 2)}`, options.colors));
 }
 
+/** The narrow rail's width (gentle-shell-canvas-parity S3): the canvas side panel's ~40 columns; the one place it is set. */
+export const RAIL_NARROW_WIDTH = 40;
+/** The narrowest host width that still gets the wide rail (the official 47-column rail and Fisi Dock's 55 stay wide); below it the narrow rail draws instead of nothing. */
+export const RAIL_WIDE_MIN_WIDTH = 44;
+
+/**
+ * The narrow rail: the whole panel, every section, at most RAIL_NARROW_WIDTH
+ * columns (less when `width` is less). It is the wide rail's renderer, whose rows
+ * already cut long values with an ellipsis inside their frame, so no line wraps or
+ * overflows.
+ */
+export function renderNarrowRail(model: PanelModel, width: number, options: PanelOptions = {}): string[] {
+	return renderRail(model, Math.min(Math.max(0, Math.floor(width)), RAIL_NARROW_WIDTH), options);
+}
+
+/** The rail for a host `width`: the wide rail from RAIL_WIDE_MIN_WIDTH up, the narrow one below it (the panel is never hidden for lack of columns). */
+export function renderAdaptiveRail(model: PanelModel, width: number, options: PanelOptions = {}): string[] {
+	return Math.floor(width) < RAIL_WIDE_MIN_WIDTH ? renderNarrowRail(model, width, options) : renderRail(model, width, options);
+}
+
 /**
  * The panel's todo section alone, framed to `width` (S28): narrow screens show it
  * above the prompt. Compact, fixed height even with a task list (S7); [] without a todo.

@@ -29,7 +29,7 @@ import { computeModalDimensions as computeMcpDimensions, extractServerDetails, r
 import { readSessionProfile } from "../lib/profile.ts";
 import { createOddTracker, type OddTracker } from "../lib/odd-timeline.ts";
 import { readOrbMotion } from "../lib/orbs.ts";
-import { agentLive, renderAgentsCard, renderDock, renderRail, renderTodoCard } from "../lib/panel.ts";
+import { agentLive, renderAdaptiveRail, renderAgentsCard, renderDock, renderTodoCard } from "../lib/panel.ts";
 import type { PanelModel } from "../lib/panel-model.ts";
 import { DEFAULT_MODEL_PRICES, estimateSessionCost, registryPrices, type ModelFinder, type PriceRates } from "../lib/pricing.ts";
 import { createWaveClock, type WaveClock } from "../lib/label-wave.ts";
@@ -1536,7 +1536,7 @@ export default function fisiDock(pi: ExtensionAPI): void {
 					const now = Date.now();
 					const logoTick = session.logoClock.tick();
 					const key = `${width}:${rows ?? ""}:${lookKey(look)}:${session.store.digest()}:${second(now)}:${mcpExpanded ? "1" : "0"}:${getPaletteToken()}:${logoTick ?? ""}`;
-					if (drawn?.key !== key) drawn = { key, lines: renderRail(session.store.model(), width, { maxRows: rows, ...look, now, mcpGrouped: true, mcpExpanded, logoTick }) };
+					if (drawn?.key !== key) drawn = { key, lines: renderAdaptiveRail(session.store.model(), width, { maxRows: rows, ...look, now, mcpGrouped: true, mcpExpanded, logoTick }) };
 					return drawn.lines;
 				},
 				// Gentle Shell main wraps rail parts in its own card on a transparent surface:
