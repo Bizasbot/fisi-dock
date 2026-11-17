@@ -1,19 +1,27 @@
 // Fisi Dock reads Gentle Shell state through Symbol.for keys, never through imports, so a
 // renamed or removed key in Gentle Shell would not fail type checking: Fisi Dock would just
-// go quiet. This test reads the installed official Gentle Shell package (gentle-pi, the one
-// `gentle-shell --link` loads) and checks that every gentle-pi.* key Fisi Dock reads still
-// exists there. It proves the key exists, not the shape of the data behind it. The package
-// is GENTLE_SHELL_DIR when set, else the one Gentle Shell itself loads (the package its
-// launcher injects into a session, else the `gentle-shell` launcher's own on PATH: pnpm and
-// npm alike), else gentle-pi in the global npm root (`npm root -g`); among several, the
-// version provisioned for the agent home in ~/.gentle-shell/config.json. Every candidate must
-// be a folder whose package.json is gentle-pi's. Skipped when none is found on this PC (CI).
+// go quiet. This test checks that every gentle-pi.* key Fisi Dock reads still exists in a
+// Gentle Shell package (gentle-pi, the one `gentle-shell --link` loads). It proves the key
+// exists, not the shape of the data behind it. The default run reads a pinned fixture
+// (tests/fixtures/gentle-shell-4.8.0): a hand-written pin of the names Fisi Dock reads, as of
+// Gentle Shell 4.8.0, not source text copied from that release. It is kept independent of
+// READ_KEYS and PROMPT_PIECES, so it never depends on this machine's PATH, npm, home or
+// Gentle Shell version, and a key added only on Fisi Dock's side fails it. It proves the
+// scanner works and that the pinned names still match what Fisi Dock reads; it does not prove
+// Gentle Shell itself still defines them. Only the opt-in check against a real installation
+// proves upstream compatibility: set FISI_DOCK_CHECK_INSTALLED_GENTLE_SHELL=1.
+// The installed package is then GENTLE_SHELL_DIR when set, else the one Gentle Shell itself
+// loads (the package its launcher injects into a session, else the `gentle-shell` launcher's
+// own on PATH: pnpm and npm alike), else gentle-pi in the global npm root (`npm root -g`);
+// among several, the version provisioned for the agent home in ~/.gentle-shell/config.json.
+// Every candidate must be a folder whose package.json is gentle-pi's. With the opt-in set and
+// no package found, the installed-package tests fail rather than skip.
 import assert from "node:assert/strict";
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, posix, win32 } from "node:path";
-import test from "node:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, posix, win32 } from "node:path";
+import test, { after } from "node:test";
 import { injectedPaths } from "../lib/rdd-mode.ts";
 
 const FISI_DOCK_DIR = join(import.meta.dirname, "..");
@@ -114,14 +122,18 @@ const npmGlobalRoot = () => {
 	const options = { encoding: "utf8" as const, stdio: ["ignore", "pipe", "ignore"] as ("ignore" | "pipe")[], timeout: 15_000 };
 	return process.platform === "win32" ? execSync("npm root -g", options) : execFileSync("npm", ["root", "-g"], options);
 };
-const GENTLE_SHELL_DIR = gentleShellDir(process.env, {
-	home: homedir(),
-	platform: process.platform,
-	fs: { readFile: (path) => readFileSync(path, "utf8"), realpath: (path) => realpathSync(path) },
-	npmRoot: npmGlobalRoot,
-});
-const NO_GENTLE_SHELL =
-	GENTLE_SHELL_DIR === undefined ? "no Gentle Shell package found (GENTLE_SHELL_DIR, the injected package, the gentle-shell launcher on PATH, the global npm root): set GENTLE_SHELL_DIR" : false;
+/** Real-installation checks only run when asked for: they read this machine's PATH, npm, home and Gentle Shell version. */
+const CHECK_INSTALLED = process.env.FISI_DOCK_CHECK_INSTALLED_GENTLE_SHELL === "1";
+const INSTALLED_DIR = CHECK_INSTALLED
+	? gentleShellDir(process.env, {
+			home: homedir(),
+			platform: process.platform,
+			fs: { readFile: (path) => readFileSync(path, "utf8"), realpath: (path) => realpathSync(path) },
+			npmRoot: npmGlobalRoot,
+		})
+	: undefined;
+const NOT_CHECKING_INSTALLED = CHECK_INSTALLED ? false : "opt-in: set FISI_DOCK_CHECK_INSTALLED_GENTLE_SHELL=1 to check the installed Gentle Shell";
+const NO_INSTALLED = "no Gentle Shell package found (GENTLE_SHELL_DIR, the injected package, the gentle-shell launcher on PATH, the global npm root): set GENTLE_SHELL_DIR";
 const SOURCE_DIRS = ["extensions", "lib"];
 const KEY_PATTERN = /Symbol\.for\(\s*["'](gentle-pi[.:][^"']+)["']/g;
 
@@ -153,16 +165,18 @@ function missingKeys(wanted: Set<string>, available: Set<string>): string[] {
 	return [...wanted].filter((key) => !available.has(key)).sort();
 }
 
+const READ_KEYS = [
+	"gentle-pi.experimental-sidebar.cache",
+	"gentle-pi.experimental-sidebar.state",
+	"gentle-pi.odd-phase-registry",
+	"gentle-pi.prompt-owner",
+	"gentle-pi:session-profile-bindings",
+	"gentle-pi:session-profile-freeze",
+	"gentle-pi:session-profile-startup-none",
+];
+
 test("Fisi Dock reads these Gentle Shell keys", () => {
-	assert.deepEqual([...gentlePiKeys(FISI_DOCK_DIR)].sort(), [
-		"gentle-pi.experimental-sidebar.cache",
-		"gentle-pi.experimental-sidebar.state",
-		"gentle-pi.odd-phase-registry",
-		"gentle-pi.prompt-owner",
-		"gentle-pi:session-profile-bindings",
-		"gentle-pi:session-profile-freeze",
-		"gentle-pi:session-profile-startup-none",
-	]);
+	assert.deepEqual([...gentlePiKeys(FISI_DOCK_DIR)].sort(), READ_KEYS);
 });
 
 // The prompt box (S88) wraps Gentle Shell's editor and rebuilds the rows its
@@ -174,13 +188,61 @@ const PROMPT_PIECES: [string, string[]][] = [
 	["extensions/gentle-shell.ts", ["topRowCount"]],
 ];
 
-test("the installed Gentle Shell still defines the prompt pieces the box relies on", { skip: NO_GENTLE_SHELL }, () => {
+/** The prompt pieces (as `file: name`) that the Gentle Shell package at `dir` no longer defines. */
+function missingPromptPieces(dir: string): string[] {
+	const missing: string[] = [];
 	for (const [file, names] of PROMPT_PIECES) {
-		const path = join(GENTLE_SHELL_DIR!, file);
-		assert.ok(existsSync(path), `Gentle Shell at ${GENTLE_SHELL_DIR} has no ${file}: the prompt box (S88) may be broken`);
-		const source = readFileSync(path, "utf8");
-		for (const name of names) assert.ok(source.includes(name), `Gentle Shell at ${GENTLE_SHELL_DIR} no longer defines ${name} in ${file}: the prompt box (S88) may be broken`);
+		const path = join(dir, file);
+		const source = existsSync(path) ? readFileSync(path, "utf8") : "";
+		for (const name of names) if (!source.includes(name)) missing.push(`${file}: ${name}`);
 	}
+	return missing.sort();
+}
+
+// The pinned Gentle Shell 4.8.0 names: a hand-written fixture kept in the repository, never built from READ_KEYS or PROMPT_PIECES, and not a copy of upstream source.
+const PINNED_GENTLE_SHELL = join(import.meta.dirname, "fixtures", "gentle-shell-4.8.0");
+
+// Generated packages, written to a temp folder, for the scanner's negative tests only: they lose a key or a piece on purpose.
+const FIXTURES: string[] = [];
+after(() => {
+	for (const dir of FIXTURES) rmSync(dir, { recursive: true, force: true });
+});
+function gentleShellFixture(files: Record<string, string>): string {
+	const dir = mkdtempSync(join(tmpdir(), "fisi-dock-gentle-shell-"));
+	FIXTURES.push(dir);
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.6.0" }));
+	for (const [file, body] of Object.entries(files)) {
+		mkdirSync(dirname(join(dir, file)), { recursive: true });
+		writeFileSync(join(dir, file), body);
+	}
+	return dir;
+}
+const keySource = (keys: string[]) => keys.map((key, index) => `export const key${index} = Symbol.for("${key}");`).join("\n");
+function pinnedFiles(keys: string[] = READ_KEYS, pieces: [string, string[]][] = PROMPT_PIECES): Record<string, string> {
+	const files: Record<string, string> = { "lib/keys.ts": keySource(keys), "lib/ignored.test.ts": keySource(["gentle-pi.only-in-a-test"]) };
+	for (const [file, names] of pieces) files[file] = `${names.map((name) => `export function ${name}() {}`).join("\n")}\n`;
+	return files;
+}
+
+test("the hand-written Gentle Shell 4.8.0 pin still names every key and prompt piece Fisi Dock reads (not proof of upstream compatibility: only the opt-in installed check is)", () => {
+	assert.equal(JSON.parse(readFileSync(join(PINNED_GENTLE_SHELL, "package.json"), "utf8")).version, "4.8.0");
+	assert.deepEqual(missingKeys(gentlePiKeys(FISI_DOCK_DIR), gentlePiKeys(PINNED_GENTLE_SHELL)), []);
+	assert.deepEqual(missingPromptPieces(PINNED_GENTLE_SHELL), []);
+	assert.ok(!gentlePiKeys(PINNED_GENTLE_SHELL).has("gentle-pi.only-in-a-test"), "a key only a test file defines does not count");
+});
+
+test("a Gentle Shell package that lost a key or a prompt piece is reported; a key only a test file defines does not count", () => {
+	const lostKey = gentleShellFixture(pinnedFiles(READ_KEYS.filter((key) => key !== "gentle-pi.prompt-owner")));
+	assert.deepEqual(missingKeys(gentlePiKeys(FISI_DOCK_DIR), gentlePiKeys(lostKey)), ["gentle-pi.prompt-owner"]);
+	const lostPiece = gentleShellFixture(pinnedFiles(READ_KEYS, [["lib/shell-prompt.ts", ["framePromptLines"]], ["extensions/gentle-shell.ts", ["topRowCount"]]]));
+	assert.deepEqual(missingPromptPieces(lostPiece), ["lib/shell-prompt.ts: panelPromptRule"]);
+	assert.deepEqual(missingPromptPieces(gentleShellFixture({})), ["extensions/gentle-shell.ts: topRowCount", "lib/shell-prompt.ts: framePromptLines", "lib/shell-prompt.ts: panelPromptRule"]);
+	assert.ok(!gentlePiKeys(gentleShellFixture(pinnedFiles())).has("gentle-pi.only-in-a-test"));
+});
+
+test("the installed Gentle Shell still defines the prompt pieces the box relies on (opt-in)", { skip: NOT_CHECKING_INSTALLED }, () => {
+	assert.ok(INSTALLED_DIR, NO_INSTALLED);
+	assert.deepEqual(missingPromptPieces(INSTALLED_DIR), [], `Gentle Shell at ${INSTALLED_DIR} no longer defines these: the prompt box (S88) may be broken`);
 });
 
 test("a key Gentle Shell no longer defines is reported", () => {
@@ -189,9 +251,10 @@ test("a key Gentle Shell no longer defines is reported", () => {
 	assert.deepEqual(missingKeys(wanted, wanted), []);
 });
 
-test("every Gentle Shell key Fisi Dock reads still exists in the installed Gentle Shell package", { skip: NO_GENTLE_SHELL }, () => {
-	const missing = missingKeys(gentlePiKeys(FISI_DOCK_DIR), gentlePiKeys(GENTLE_SHELL_DIR!));
-	assert.deepEqual(missing, [], `Gentle Shell at ${GENTLE_SHELL_DIR} no longer defines: ${missing.join(", ")}`);
+test("every Gentle Shell key Fisi Dock reads still exists in the installed Gentle Shell package (opt-in)", { skip: NOT_CHECKING_INSTALLED }, () => {
+	assert.ok(INSTALLED_DIR, NO_INSTALLED);
+	const missing = missingKeys(gentlePiKeys(FISI_DOCK_DIR), gentlePiKeys(INSTALLED_DIR));
+	assert.deepEqual(missing, [], `Gentle Shell at ${INSTALLED_DIR} no longer defines: ${missing.join(", ")}`);
 });
 
 // A fake disk for the resolver: file bodies and symlinks by path (either slash). No real home is read.
@@ -286,7 +349,7 @@ test("S1 when several Gentle Shell packages are found, the one provisioned for t
 	assert.equal(gentleShellDir({ ...env, GENTLE_SHELL_DIR: old }, at(config(agent, "4.6.0-main.dd37ffe5573d"))), old, "GENTLE_SHELL_DIR always wins");
 });
 
-test("S1 with no Gentle Shell anywhere (CI) there is no package, so the key tests skip", () => {
+test("S1 with no Gentle Shell anywhere there is no package", () => {
 	assert.equal(gentleShellDir({}, { ...nix, fs: fakeDisk({}), npmRoot: () => "/usr/lib/node_modules" }), undefined, "npm's root has no gentle-pi");
 	const nothing = { PATH: "/usr/bin", GENTLE_SHELL_DIR: "/nowhere", GENTLE_SHELL_CHILD_PACKAGE_INJECTION: injected("/nowhere/ext") };
 	assert.equal(gentleShellDir(nothing, { ...nix, fs: fakeDisk({ "/usr/bin/gentle-shell": "not a shim" }), npmRoot: noNpm }), undefined);

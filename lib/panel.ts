@@ -2,7 +2,7 @@ import { ciLive } from "./ci.ts";
 import { entranceFlash, entranceText, type EntrancePiece } from "./entrance.ts";
 import { type Accent, type ColorMode, DEFAULT_SECTIONS, type DividerLevel, type FrameStyle, type LogoStyle, type MotionMode, type SectionId, type SectionSetting } from "./look.ts";
 import { renderLogo } from "./logo.ts";
-import { fitDetail } from "./odd-detail.ts";
+import { fitDetail, printable } from "./odd-detail.ts";
 import { orbAt, orbOf, orbWidth, shimmerText, spinnerAt } from "./orbs.ts";
 import type { AgentInfo, ChangeInfo, CiCheck, CiInfo, FooterInfo, HeadsUpWarning, McpServerInfo, OddInfo, PanelModel, RddInfo, RddReview, SessionInfo, SkillInfo, SkillScope, SkillsInfo, TodoInfo, TodoTask } from "./panel-model.ts";
 import { shortAgentModel } from "./prompt-line.ts";
@@ -348,9 +348,12 @@ export function warningGlyph(kind: HeadsUpWarning["kind"]): string {
 	return WARNING_GLYPH[kind] ?? WARNING_GLYPH.worktrees;
 }
 
+/** The warnings the heads-up section draws: all up to the cap, else one fewer than the cap and a "+N more" row. */
+const shownWarnings = (warnings: HeadsUpWarning[]): HeadsUpWarning[] => (warnings.length > HEADS_UP_CAP ? warnings.slice(0, HEADS_UP_CAP - 1) : warnings);
+
 function headsUpSection(warnings: HeadsUpWarning[], width: number): Section | undefined {
 	if (warnings.length === 0) return undefined;
-	const shown = warnings.length > HEADS_UP_CAP ? warnings.slice(0, HEADS_UP_CAP - 1) : warnings;
+	const shown = shownWarnings(warnings);
 	const rows = shown.map((warning) => ({
 		text: item(warningGlyph(warning.kind), (rest) => plainText(ellipsize(warning.text, rest)), width),
 	}));
@@ -704,9 +707,11 @@ function fileLabel(name: string, folder: string, width: number): string {
 
 function changeRow(change: ChangeInfo, width: number): Row {
 	const kind = CHANGE_KIND[change.status] ?? CHANGE_KIND.M;
-	const slash = change.path.lastIndexOf("/");
-	const name = change.path.slice(slash + 1);
-	const folder = change.path.slice(0, slash + 1);
+	// File names come from the repository: drop terminal controls before they reach a row (S4).
+	const path = printable(change.path);
+	const slash = path.lastIndexOf("/");
+	const name = path.slice(slash + 1);
+	const folder = path.slice(0, slash + 1);
 	// git has no line counts for untracked files: a word says what happened instead of +0 -0.
 	const right = kind.word
 		? fg(kind.color, kind.word)
@@ -939,7 +944,6 @@ function panelLines(moving: PanelModel, width: number, options: PanelOptions): s
 	if (columns === 0) return [];
 	const model = options.motion === "off" ? stillModel(moving) : moving;
 	const inner = columns - 4;
-	const unpushed = model.headsUp?.some((warning) => warning.kind === "unpushed") ?? false;
 	// A check that runs, waits or failed keeps CI on screen longer (S77).
 	const ciUrgent = ciLive(model.ci) || (model.ci?.checks.some((check) => check.state === "failed") ?? false);
 	const frames = options.frames ?? "faded";
@@ -947,6 +951,8 @@ function panelLines(moving: PanelModel, width: number, options: PanelOptions): s
 	const accent = options.accent;
 	// Session first, then the shown sections in the saved order (look-more S6).
 	const order = (options.sections ?? DEFAULT_SECTIONS).filter((section) => section.shown).map((section) => section.id);
+	// ↑N leaves the branch only when the heads-up that says it is drawn: the section shown and the warning among those it draws (not behind its cap).
+	const unpushed = order.includes("heads-up") && (shownWarnings(model.headsUp ?? []).some((warning) => warning.kind === "unpushed"));
 	const draw = (shape: Shape, gaps: boolean) => {
 		const parts: Record<SectionId, () => Section | undefined> = {
 			"heads-up": () => model.headsUp && headsUpSection(model.headsUp, inner),

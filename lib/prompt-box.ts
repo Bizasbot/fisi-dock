@@ -15,11 +15,13 @@
 // flat gray, faded like the rail boxes, or none, the labels on a fading top rule alone. Light
 // colors paint what the box adds for a light background (look-more S5); Gentle Shell's petal,
 // label, hint and rows keep the colors it painted them in.
-import { waveLabel, wavePetal } from "./label-wave.ts";
+import { PETAL_FRAMES, waveLabel, wavePetal } from "./label-wave.ts";
 import type { Accent, ColorMode, FrameStyle } from "./look.ts";
 import { dim, fadeAmount, fadedEdge, fg, labelAccent, palette, tone } from "./palette.ts";
 import { promptLineSteps, type PromptLineModel, type PromptLinePart } from "./prompt-line.ts";
 import { ellipsize, padEnd, sliceColumns, truncateToWidth, visibleWidth } from "./text.ts";
+/** The petal after the rule's leading `─ `, any frame: masked in the fallback key so its turning does not retry the box (S33, S40). */
+const PETAL_KEY = new RegExp(`^(─ )[${PETAL_FRAMES.join("")}]`, "u");
 
 /** Gentle Shell marks its editor factory with this symbol (extensions/gentle-shell.ts): it steps aside for an unmarked editor and resets only a marked one at shutdown. */
 export const PROMPT_OWNER = Symbol.for("gentle-pi.prompt-owner");
@@ -300,7 +302,14 @@ export function wrapPromptFactory(original: EditorFactory, deps: PromptBoxDeps):
 		// width; `retry`: the fallback was not panel chrome, so the box is tried again
 		// the frame the chrome comes back. Panel chrome too tight for the box waits for
 		// a new width.
-		let direct: { width: number; retry: boolean } | undefined;
+		// `rule`: the full-width rule it failed on, so a new label (which can fit the bare box now) tries the box again.
+		let direct: { width: number; retry: boolean; rule: string } | undefined;
+		const ruleOf = (rows: string[]): string => {
+			const rule = rows[topRowsOf(editor)];
+			// The petal turns every frame while the label stays: it is not part of what must fit, so it is normalized.
+			// Only one of Gentle Shell's petal glyphs is masked: a rule without a petal keeps its label's first character in the key.
+			return rule === undefined ? "" : strip(rule).replace(/─+/g, "─").replace(PETAL_KEY, "$1✿");
+		};
 		const unboxed = (rows: string[]): string[] => {
 			frame = { boxed: false, ruleShift: LEFT_COLUMNS, top: 0, buttonDropped: false, leftOut: -1 };
 			deps.onRender?.(false);
@@ -316,7 +325,8 @@ export function wrapPromptFactory(original: EditorFactory, deps: PromptBoxDeps):
 			let full: string[] | undefined;
 			if (direct?.width === columns) {
 				full = render.call(editor, width);
-				if (!direct.retry || !isPanelChrome(full, topRowsOf(editor))) return unboxed(full);
+				const chrome = isPanelChrome(full, topRowsOf(editor));
+				if (direct.retry ? !chrome : !chrome || ruleOf(full) === direct.rule) return unboxed(full);
 			}
 			const rows = render.call(editor, columns - FRAME_COLUMNS);
 			const top = topRowsOf(editor);
@@ -328,15 +338,17 @@ export function wrapPromptFactory(original: EditorFactory, deps: PromptBoxDeps):
 				deps.onScanning?.(box.scanning);
 				return box.rows;
 			}
-			direct = { width: columns, retry: !full && !isPanelChrome(rows, top) };
-			return unboxed(full ?? render.call(editor, width));
+			const fallback = full ?? render.call(editor, width);
+			direct = { width: columns, retry: !full && !isPanelChrome(rows, top), rule: ruleOf(fallback) };
+			return unboxed(fallback);
 		};
 		if (typeof handleMouse === "function") {
 			editor.handleMouse = function (event: MouseEvent): unknown {
 				if (!frame.boxed || !event || typeof event !== "object") return handleMouse.call(editor, event);
 				// The rule row holds Gentle Shell's dropped `[ Panel ]` button: a click there stays with the box.
 				if (event.y === frame.top && frame.buttonDropped) return undefined;
-				const shift = event.y === frame.top ? frame.ruleShift : LEFT_COLUMNS;
+				// Rows above the rule have no left border: their x stays as it came.
+				const shift = event.y < frame.top ? 0 : event.y === frame.top ? frame.ruleShift : LEFT_COLUMNS;
 				// Rows under the row the box left out sit one higher than in Gentle Shell's rows.
 				const y = frame.leftOut >= 0 && event.y >= frame.leftOut ? event.y + 1 : event.y;
 				return handleMouse.call(editor, { ...event, x: Math.max(0, event.x - shift), y, width: event.width - FRAME_COLUMNS });

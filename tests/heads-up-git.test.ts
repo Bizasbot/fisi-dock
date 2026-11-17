@@ -8,12 +8,39 @@ import { forgetSquashVerdicts, readHeadsUpGit } from "../lib/heads-up.ts";
 import type { GitExec } from "../lib/live-store.ts";
 
 // S4: readHeadsUpGit against real git in a throwaway repository. Commits use
-// their own identity and no hooks, so global git config does not matter.
+// their own identity and no hooks, and every git call (setup and the recorded
+// exec) reads an empty fixture-local global config instead of the host's and drops
+// inherited GIT_CONFIG_* overrides, so host settings such as core.excludesFile cannot
+// change the result.
 
 const IDENTITY = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=no-hooks"];
 
+const CONFIG_HOME = realpathSync.native(mkdtempSync(join(tmpdir(), "fisi-dock-heads-up-config-")));
+const GLOBAL_CONFIG = join(CONFIG_HOME, "gitconfig");
+writeFileSync(GLOBAL_CONFIG, "");
+process.on("exit", () => rmSync(CONFIG_HOME, { recursive: true, force: true }));
+// Command-scope configuration git takes from the environment (GIT_CONFIG_COUNT with GIT_CONFIG_KEY_<n> /
+// GIT_CONFIG_VALUE_<n>, GIT_CONFIG_PARAMETERS, the legacy GIT_CONFIG) outranks every config file, so the
+// empty global config alone would not isolate the fixture; nor would an inherited repository location.
+// Environment names are case-insensitive on Windows, hence the i flag.
+const INHERITED_GIT_OVERRIDES = /^(GIT_CONFIG(_.*)?|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_NAMESPACE|GIT_EXCLUDE_FROM)$/i;
+
+/** `base` without any inherited git configuration or repository override, pointed at the fixture-local config. */
+function isolatedGitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const [name, value] of Object.entries(base)) if (!INHERITED_GIT_OVERRIDES.test(name)) env[name] = value;
+	return {
+		...env,
+		GIT_CONFIG_GLOBAL: GLOBAL_CONFIG,
+		GIT_CONFIG_NOSYSTEM: "1",
+		// The default core.excludesFile is $XDG_CONFIG_HOME/git/ignore.
+		XDG_CONFIG_HOME: CONFIG_HOME,
+	};
+}
+const GIT_ENV = isolatedGitEnv(process.env);
+
 function run(cwd: string, args: string[]) {
-	return spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
+	return spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true, env: GIT_ENV });
 }
 
 /** Runs a setup step; any failure stops the test with git's own message. */
@@ -110,4 +137,70 @@ test("readHeadsUpGit on a real repository: squash, cherry-pick, real changes, co
 	} finally {
 		forgetSquashVerdicts();
 	}
+});
+
+test("readHeadsUpGit re-checks a branch when the target commit changed but its tree did not (S9)", async (t) => {
+	if (run(tmpdir(), ["--version"]).status !== 0) return t.skip("git is not installed");
+	const repo = realpathSync.native(mkdtempSync(join(tmpdir(), "fisi-dock-heads-up-")));
+	t.after(() => rmSync(repo, { recursive: true, force: true }));
+
+	git(repo, "init", "-q", "-b", "main");
+	git(repo, "config", "core.autocrlf", "false");
+	commit(repo, { "f.txt": "0\n" }, "base");
+	if (run(repo, ["merge-tree", "--write-tree", "main", "main"]).status !== 0) return t.skip("git merge-tree --write-tree is not supported (git 2.38+)");
+
+	// The feature sets f 0 -> 1 -> 0 and adds g; main sets f to 2 and adds the same g.
+	git(repo, "switch", "-q", "-c", "feature");
+	commit(repo, { "f.txt": "1\n" }, "feature f=1");
+	const middle = git(repo, "rev-parse", "HEAD").trim();
+	commit(repo, { "f.txt": "0\n", "g.txt": "g\n" }, "feature f=0, add g");
+	git(repo, "switch", "-q", "main");
+	commit(repo, { "f.txt": "2\n", "g.txt": "g\n" }, "main f=2, add g");
+	git(repo, "switch", "-q", "-c", "current");
+
+	forgetSquashVerdicts();
+	try {
+		assert.deepEqual(await readHeadsUpGit(recordingExec(repo).exec, repo, "current"), { worktrees: [], unmerged: [] }, "merging the feature changes nothing");
+
+		// An `ours` merge of the feature's middle commit moves main's commit, not its tree.
+		git(repo, "switch", "-q", "main");
+		const treeBefore = git(repo, "rev-parse", "main^{tree}");
+		git(repo, "merge", "-q", "-s", "ours", "-m", "ours", middle);
+		assert.equal(git(repo, "rev-parse", "main^{tree}"), treeBefore, "the tree is the same");
+		git(repo, "switch", "-q", "current");
+
+		const second = recordingExec(repo);
+		assert.deepEqual(await readHeadsUpGit(second.exec, repo, "current"), { worktrees: [], unmerged: ["feature"] }, "merging the feature now conflicts on f");
+		assert.deepEqual(second.calls.filter((args) => args[0] === "merge-tree").map((args) => args[3]), ["feature"]);
+	} finally {
+		forgetSquashVerdicts();
+	}
+});
+
+test("the fixture's git environment drops inherited command-scope config, so an inherited *.txt exclude cannot reject git add (S36)", (t) => {
+	if (run(tmpdir(), ["--version"]).status !== 0) return t.skip("git is not installed");
+	const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "fisi-dock-heads-up-env-")));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const excludes = join(dir, "excludes");
+	writeFileSync(excludes, "*.txt\n");
+	// From the fixture's own environment, so a host GIT_DIR or GIT_WORK_TREE cannot point git elsewhere; only the overrides are added.
+	const inherited = {
+		...GIT_ENV,
+		GIT_CONFIG_COUNT: "1",
+		GIT_CONFIG_KEY_0: "core.excludesFile",
+		GIT_CONFIG_VALUE_0: excludes,
+		GIT_CONFIG_PARAMETERS: "'core.excludesfile=" + excludes + "'",
+		git_config_count: "1",
+	};
+	const env = isolatedGitEnv(inherited);
+	for (const name of Object.keys(env)) assert.ok(!/^GIT_CONFIG_(COUNT|KEY_|VALUE_|PARAMETERS)/i.test(name), `${name} was inherited`);
+	assert.equal(env.GIT_CONFIG_GLOBAL, GLOBAL_CONFIG);
+
+	const repo = join(dir, "repo");
+	const at = (override: NodeJS.ProcessEnv, ...args: string[]) => spawnSync("git", args, { cwd: repo, encoding: "utf8", windowsHide: true, env: override });
+	assert.equal(spawnSync("git", ["init", "-q", repo], { encoding: "utf8", windowsHide: true, env }).status, 0);
+	writeFileSync(join(repo, "a.txt"), "a\n");
+	assert.notEqual(at(inherited, "add", "--", "a.txt").status, 0, "the inherited override would have rejected the file");
+	const added = at(env, "add", "--", "a.txt");
+	assert.equal(added.status, 0, added.stderr);
 });

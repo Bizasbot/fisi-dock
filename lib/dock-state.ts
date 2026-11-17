@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { type Look, normalizeLook } from "./look.ts";
 
 /**
@@ -41,9 +41,72 @@ export function readDockLook(path: string): Look {
 }
 
 /**
+ * Writes `text` to a temporary file next to `path`, then renames it over `path`, so a
+ * failed write leaves the previous file whole and readers never see a half-written one.
+ * Windows can refuse the rename for a moment while another process reads the file, so
+ * it is tried a few times, with a short pause between tries. The temporary file is removed when the write fails.
+ * A symlinked file is replaced at its target, so the link stays, and the replaced file keeps its mode.
+ * A chain of links is followed to its end, up to a small depth; a loop or a longer chain fails the save.
+ */
+const MAX_LINK_DEPTH = 8;
+let tempSequence = 0;
+function replaceFile(path: string, text: string): void {
+	let target = path;
+	let mode: number | undefined;
+	for (let depth = 0; ; depth++) {
+		try {
+			target = realpathSync(target);
+			const stat = statSync(target);
+			if (stat.isFile()) mode = stat.mode & 0o777;
+			break;
+		} catch {
+			// No file yet: it is made at `target` with the default mode; a link to a missing file is followed.
+		}
+		let next: string | undefined;
+		try {
+			// The folder is resolved first: a relative link counts from the real folder of the link that holds it, not a linked alias.
+			if (lstatSync(target).isSymbolicLink()) next = resolve(realpathSync(dirname(target)), readlinkSync(target));
+		} catch {
+			// Nothing at `target` at all.
+		}
+		if (next === undefined) break;
+		if (depth >= MAX_LINK_DEPTH) throw new Error(`too many levels of symbolic links: ${path}`);
+		target = next;
+	}
+	// The counter keeps two writes in one millisecond apart; another process has another pid.
+	const temp = `${target}.${process.pid}.${Date.now().toString(36)}.${(++tempSequence).toString(36)}.tmp`;
+	let made = false;
+	try {
+		const fd = openSync(temp, "wx");
+		made = true;
+		try {
+			writeFileSync(fd, text);
+		} finally {
+			closeSync(fd);
+		}
+		if (mode !== undefined) chmodSync(temp, mode);
+		for (let attempt = 1; ; attempt++) {
+			try {
+				renameSync(temp, target);
+				return;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (attempt >= 5 || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) throw error;
+				// A short synchronous pause lets the other process close the file.
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * attempt);
+			}
+		}
+	} catch (error) {
+		// Only a file this write created is removed (a failed exclusive create leaves a foreign one alone); a half-written one is removed too.
+		if (made) rmSync(temp, { force: true });
+		throw error;
+	}
+}
+
+/**
  * Writes `fields` over what the file already holds (S5), so each writer keeps the others'
  * keys; `undefined` drops a key. A missing or malformed file starts empty. False when it
- * could not be written.
+ * could not be written; the previous file then stays as it was.
  */
 function mergeState(path: string, fields: Record<string, unknown>): boolean {
 	try {
@@ -53,7 +116,7 @@ function mergeState(path: string, fields: Record<string, unknown>): boolean {
 			if (value === undefined) delete state[key];
 			else state[key] = value;
 		}
-		writeFileSync(path, `${JSON.stringify(state)}\n`);
+		replaceFile(path, `${JSON.stringify(state)}\n`);
 		return true;
 	} catch {
 		return false;

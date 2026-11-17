@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ciLive, gitPushTool, readCi, type CiRuns } from "../lib/ci.ts";
+import { ciLive, gitPushTool, readCi, type CiMode, type CiRuns } from "../lib/ci.ts";
 import { dockStatePath, readDockEnabled, readDockLook, readDockTheme, readDockThemeApplied, writeDockEnabled, writeDockLook } from "../lib/dock-state.ts";
 import { headerPath, renderHeaderLine, renderNarrowHeader } from "../lib/header.ts";
 import { readHeadsUpGit, readOddPlans } from "../lib/heads-up.ts";
@@ -281,6 +281,7 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext, look: () => Look, sk
 		// A run starting or settling may leave the drawn model as it was and still
 		// start or stop the todo spinner (L61), so this runs on every patch.
 		spinner.sync(store.spinning(), store.entering());
+		waiting.sync(store.model().agents?.some((agent) => agent.state === "waiting") ?? false);
 	};
 	// Running spinners (S31): a wall-clock timer only while one is drawn; each
 	// new frame changes the store digest, so the rail memo and the strip repaint.
@@ -291,6 +292,22 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext, look: () => Look, sk
 		motion: orbMotion,
 		onFrame: (frame) => apply({ spinner: frame }),
 	});
+	// A waiting agent (S31): its elapsed time ticks, but the spinner clock does not
+	// run for it. One repaint a second, only while an agent waits; stopped when none
+	// does and on dispose. The spinner clock above is left as it is.
+	let waitTimer: ReturnType<typeof setInterval> | undefined;
+	const waiting = {
+		sync(active: boolean) {
+			if (active && !waitTimer && !disposed) {
+				waitTimer = setInterval(() => attempt(() => host?.requestRender()), 1000);
+				(waitTimer as { unref?(): void }).unref?.();
+			} else if (!active && waitTimer) waiting.stop();
+		},
+		stop() {
+			if (waitTimer) clearInterval(waitTimer);
+			waitTimer = undefined;
+		},
+	};
 	// The prompt label's color wave (S90): by the clock, only while Gentle Shell scans its
 	// label; with motion off one still moment and no timer (look-more S2).
 	const wave = createWaveClock({
@@ -387,11 +404,13 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext, look: () => Look, sk
 	let branch: string | undefined;
 	let gitRead = false;
 	let ciRuns: CiRuns | undefined;
+	// The installed gh, learned by readCi; kept for this session, so an older gh costs one call per poll even with no runs (S39).
+	const ciMode: CiMode = {};
 	let ciReadAt = Date.now();
 	const ci = createSerialRefresh(async () => {
 		if (disposed || !cwd) return;
 		const at = branch;
-		const read = at === undefined ? null : await readCi((args) => pi.exec("gh", args, { cwd, timeout: GH_TIMEOUT_MS }), at, ciRuns);
+		const read = at === undefined ? null : await readCi((args) => pi.exec("gh", args, { cwd, timeout: GH_TIMEOUT_MS }), at, ciRuns, undefined, ciMode);
 		ciReadAt = Date.now();
 		if (disposed || read === undefined || branch !== at) return;
 		ciRuns = read ?? undefined;
@@ -399,11 +418,18 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext, look: () => Look, sk
 	});
 	const git = createSerialRefresh(async () => {
 		if (disposed || !cwd) return;
-		const exec = (args: string[]) => pi.exec("git", args, { cwd, timeout: GIT_TIMEOUT_MS });
+		// A branch command that succeeded and answered HEAD is a detached checkout
+		// (S22); one that failed or timed out says nothing (S66).
+		let detached = false;
+		const exec = async (args: string[]) => {
+			const result = await pi.exec("git", args, { cwd, timeout: GIT_TIMEOUT_MS });
+			if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") detached = result.code === 0 && result.stdout.trim() === "HEAD";
+			return result;
+		};
 		const session = await readGit(exec);
 		apply(session);
 		const first = !gitRead;
-		const moved = session.branch !== undefined && session.branch !== branch;
+		const moved = (session.branch !== undefined && session.branch !== branch) || (detached && branch !== undefined);
 		gitRead = true;
 		if (moved) branch = session.branch;
 		if (moved && ciRuns) {
@@ -641,6 +667,7 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext, look: () => Look, sk
 			pushCalls.clear();
 			odd.dispose();
 			spinner.dispose();
+			waiting.stop();
 			wave.dispose();
 			disposed = true;
 			attempt(() => unobserveMode?.());
@@ -664,6 +691,8 @@ export default function fisiDock(pi: ExtensionAPI): void {
 	// everything, from the start of each session.
 	const statePath = () => dockStatePath(process.env, attempt(() => homedir()) ?? "");
 	let enabled = readDockEnabled(statePath());
+	// The theme in use when /fisi-dock on could not save it: off still hands it back (S23).
+	let unsavedTheme: string | undefined;
 	// The look picked in `/fisi-dock settings` (look settings S1, S5): read at each
 	// session start and on, shared by every renderer, and changed live by the menu.
 	let look = readDockLook(statePath());
@@ -897,7 +926,7 @@ export default function fisiDock(pi: ExtensionAPI): void {
 		// followed by Fisi Dock's agents card (S35) and todo card (S28). The card
 		// headers have the agent count and `d/t`, so the strip leaves those
 		// segments out while a card shows (S8). Agent times tick on the spinner's
-		// repaints; the second is part of the memo key while agents run.
+		// repaints; the second is part of the memo key while agents run or wait.
 		ctx.ui.setWidget(
 			STRIP_KEY,
 			(tui: Host) => {
@@ -909,7 +938,7 @@ export default function fisiDock(pi: ExtensionAPI): void {
 						if (live !== session || !terminal?.[SIDEBAR_STATE] || railOwnsHost(terminal)) return [];
 						const model = session.store.model();
 						const now = Date.now();
-						const running = model.agents?.some((agent) => agent.state === "running") ?? false;
+						const running = model.agents?.some(agentLive) ?? false;
 						const key = `${width}:${lookKey(look)}:${session.store.digest()}:${running ? Math.floor(now / 1000) : ""}`;
 						if (drawn?.key !== key) {
 							const agents = renderAgentsCard(model.agents, width, model.spinner, now, look.colors, look.motion);
@@ -1133,9 +1162,10 @@ export default function fisiDock(pi: ExtensionAPI): void {
 			if (next) look = readDockLook(path);
 			const dockTheme = themeNameFor(look.colors, look.accent);
 			const inUse = attempt(() => ctx.ui.theme.name);
-			const remembered = next && typeof inUse === "string" && inUse !== "" && !isDockTheme(inUse) ? inUse : readDockTheme(path);
+			const remembered = next && typeof inUse === "string" && inUse !== "" && !isDockTheme(inUse) ? inUse : ((next ? undefined : unsavedTheme) ?? readDockTheme(path));
 			const applied = readDockThemeApplied(path);
 			const saved = writeDockEnabled(path, next, remembered, applied);
+			unsavedTheme = next && !saved ? remembered : undefined;
 			stop();
 			setLoaded(next);
 			if (next && ctx.hasUI) start(ctx);

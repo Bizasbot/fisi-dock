@@ -217,8 +217,8 @@ interface Task {
 	lastStep?: string;
 	/** When the call that launched or continued it started: the time shown until the first running event. */
 	calledAt?: number;
-	/** A continue call in flight on a task that was not live: how the row was, for when that call makes no run. */
-	resumed?: { callId?: string; status: TaskStatus; endedAt?: number; label?: string; text?: string };
+	/** Continue calls in flight, oldest first: how the row was before each (status, times, label and text), for when that call makes no run. */
+	resumed?: Array<{ callId?: string; provisional: boolean; status: TaskStatus; endedAt?: number; startedAt?: number; calledAt?: number; label?: string; text?: string }>;
 	startedAt?: number;
 	endedAt?: number;
 	/** Presence file reads that looked for its model: at most SUBAGENT_DETAILS_ATTEMPTS. */
@@ -320,22 +320,39 @@ export function createSubagentTracker(sessionId: string, now: () => number): Sub
 		return created;
 	};
 	/** Drops the pending call `callId`, else the oldest of `toolName`'s kind; true when one went. */
-	const drop = (toolName: unknown, callId: string | undefined): boolean => {
+	/** Removes the pending call `callId` names; without a match, the oldest of its kind, unless `exact` (an id must name its own call). */
+	const drop = (toolName: unknown, callId: string | undefined, exact = false): boolean => {
 		let at = callId === undefined ? -1 : pending.findIndex((entry) => entry.callId === callId);
+		if (at < 0 && exact && callId !== undefined) return false;
 		if (at < 0) at = pending.findIndex((entry) => (entry.call.taskId === undefined) === (toolName === RUN_TOOL));
 		if (at < 0) return false;
 		pending.splice(at, 1);
 		return true;
 	};
-	/** Puts back the row of the task a continue call made run, when that call made no run; any such task without `callId`. */
+	/**
+	 * Puts back the row of the task a continue call made run, when that call made no run, as it was
+	 * before that call. Without `callId`: any such task's latest call. An older call refused while a
+	 * newer one is in flight leaves the row to the newer one, which then rolls back to before both.
+	 */
 	const restore = (callId: string | undefined): boolean => {
 		for (const known of tasks.values()) {
-			const before = known.resumed;
-			if (!before || (callId !== undefined && before.callId !== callId)) continue;
-			known.resumed = undefined;
-			known.provisional = false;
+			const stack = known.resumed ?? [];
+			const at = callId === undefined ? stack.length - 1 : stack.findIndex((entry) => entry.callId === callId);
+			if (at < 0) continue;
+			const before = stack[at];
+			if (at < stack.length - 1) {
+				// The merged entry is the newer call's: its id, or none; never the refused older call's.
+				const { callId: _older, ...rollback } = before;
+				stack[at + 1] = { ...rollback, ...(stack[at + 1].callId !== undefined ? { callId: stack[at + 1].callId } : {}) };
+				stack.splice(at, 1);
+				return true;
+			}
+			known.resumed = at > 0 ? stack.slice(0, at) : undefined;
+			known.provisional = before.provisional;
 			known.status = before.status;
 			known.endedAt = before.endedAt;
+			known.startedAt = before.startedAt;
+			known.calledAt = before.calledAt;
 			known.label = before.label;
 			known.text = before.text;
 			return true;
@@ -381,13 +398,16 @@ export function createSubagentTracker(sessionId: string, now: () => number): Sub
 			if (!call) return false;
 			const known = call.taskId !== undefined ? tasks.get(call.taskId) : undefined;
 			if (known) {
-				const before = { ...(callId !== undefined ? { callId } : {}), status: known.status, endedAt: known.endedAt, label: known.label, text: known.text };
+				const before = { ...(callId !== undefined ? { callId } : {}), provisional: known.provisional, status: known.status, endedAt: known.endedAt, startedAt: known.startedAt, calledAt: known.calledAt, label: known.label, text: known.text };
+				// Live or not, a continue that makes no run must give the row back as it was before that call.
+				(known.resumed ??= []).push(before);
 				describe(known, call);
 				// A continuation runs the task again: running until an event or its result says otherwise.
 				if (!LIVE.has(known.status)) {
-					known.resumed = before;
 					known.status = "running";
 					known.endedAt = undefined;
+					// Its time counts from this call, then from the new running event, not from the previous run.
+					known.startedAt = undefined;
 					known.calledAt = now();
 					known.provisional = true;
 				}
@@ -403,7 +423,8 @@ export function createSubagentTracker(sessionId: string, now: () => number): Sub
 			if (!details) {
 				if (toolName === RUN_TOOL) return drop(toolName, callId);
 				if (toolName !== CONTINUE_TOOL) return false;
-				return (callId !== undefined && restore(callId)) || drop(toolName, callId) || restore(undefined);
+				// An id that names no recorded call (a late duplicate, or one an older call already merged away) must not roll back the newest call: only an id-less result does.
+				return (callId !== undefined && restore(callId)) || drop(toolName, callId, true) || (callId === undefined && restore(undefined));
 			}
 			const known = tasks.get(details.taskId);
 			const current = known ?? adopt(details.taskId, callId);

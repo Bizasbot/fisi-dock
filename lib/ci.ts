@@ -29,19 +29,31 @@ export interface CiRuns {
 	readAt?: number;
 }
 
+/**
+ * What a caller remembers about the installed gh between reads, kept for as
+ * long as it should (the session): readCi reads and sets it, so the mode
+ * outlives an empty run list or a failed read (S39).
+ */
+export interface CiMode {
+	/** The installed gh refused workflowDatabaseId: later reads ask without it. */
+	legacyList?: true;
+}
+
 /** Runs one gh command in the session folder; Pi's exec in the extension. */
-export type CiExec = (args: string[]) => Promise<{ stdout: string; code: number }>;
+export type CiExec = (args: string[]) => Promise<{ stdout: string; stderr?: string; code: number }>;
 
 const LIST_LIMIT = 20;
-const LIST_FIELDS = "databaseId,workflowName,name,status,conclusion,startedAt,updatedAt,createdAt,headSha";
+const LIST_FIELDS = "databaseId,workflowDatabaseId,workflowName,name,status,conclusion,startedAt,updatedAt,createdAt,headSha";
+/** For a gh too old to know workflowDatabaseId: runs are then kept apart by their raw workflow name. */
+const LEGACY_LIST_FIELDS = LIST_FIELDS.replace("workflowDatabaseId,", "");
 /** gh names past this many characters are cut (S64). */
 const NAME_CAP = 80;
 const SHORT_SHA = 7;
 /** Past this long without a successful list read, a running check's time and spinner hold (S66). */
 const STALE_MS = 90_000;
 
-export function ciListArgs(branch: string): string[] {
-	return ["run", "list", "--branch", branch, "--limit", String(LIST_LIMIT), "--json", LIST_FIELDS];
+export function ciListArgs(branch: string, workflowId = true): string[] {
+	return ["run", "list", "--branch", branch, "--limit", String(LIST_LIMIT), "--json", workflowId ? LIST_FIELDS : LEGACY_LIST_FIELDS];
 }
 
 export function ciViewArgs(id: number): string[] {
@@ -100,15 +112,18 @@ export function ciRunsFromList(stdout: string): CiRuns | null | undefined {
 		const run: CiRun = { name: clean(entry.workflowName) || clean(entry.name), state: runState(entry.status, entry.conclusion) };
 		if (id !== undefined) run.id = id;
 		for (const [key, ms] of Object.entries(times)) if (ms !== undefined) run[key as keyof typeof times] = ms;
-		return [{ sha, run }];
+		// Deduplicate by the workflow's own id; without one, by its raw name: the shown name is cleaned and cut (S7).
+		const workflowId = entry.workflowDatabaseId;
+		const workflow = typeof workflowId === "number" && Number.isSafeInteger(workflowId) ? `id:${workflowId}` : `name:${String(entry.workflowName || entry.name || "")}`;
+		return [{ sha, run, workflow }];
 	});
 	if (runs.length === 0) return null;
 	const newest = runs.reduce((best, entry) => (newer(entry.run.createdAt, best.run.createdAt) ? entry : best));
 	const byWorkflow = new Map<string, CiRun>();
-	for (const { sha, run } of runs) {
+	for (const { sha, run, workflow } of runs) {
 		if (sha !== newest.sha) continue;
-		const known = byWorkflow.get(run.name);
-		if (!known || newer(run.createdAt, known.createdAt)) byWorkflow.set(run.name, run);
+		const known = byWorkflow.get(workflow);
+		if (!known || newer(run.createdAt, known.createdAt)) byWorkflow.set(workflow, run);
 	}
 	return { sha: newest.sha, runs: [...byWorkflow.values()] };
 }
@@ -130,13 +145,27 @@ function viewJob(stdout: string): { job?: string } | undefined {
 	return { job: step ? `${name} · ${step}` : name };
 }
 
-async function ghOutput(exec: CiExec, args: string[]): Promise<string | undefined> {
+async function ghResult(exec: CiExec, args: string[]): Promise<{ stdout: string; stderr?: string; code: number } | undefined> {
 	try {
-		const result = await exec(args);
-		return result.code === 0 ? result.stdout : undefined;
+		return await exec(args);
 	} catch {
 		return undefined;
 	}
+}
+
+async function ghOutput(exec: CiExec, args: string[]): Promise<string | undefined> {
+	const result = await ghResult(exec, args);
+	return result?.code === 0 ? result.stdout : undefined;
+}
+
+/** The list read; a gh that refuses the workflowDatabaseId field is asked once more without it, and `mode` remembers it. */
+async function listOutput(exec: CiExec, branch: string, mode: CiMode): Promise<string | undefined> {
+	if (mode.legacyList) return ghOutput(exec, ciListArgs(branch, false));
+	const result = await ghResult(exec, ciListArgs(branch));
+	if (result?.code === 0) return result.stdout;
+	if (!result || !/workflowDatabaseId/.test(result.stderr ?? "")) return undefined;
+	mode.legacyList = true;
+	return ghOutput(exec, ciListArgs(branch, false));
 }
 
 /**
@@ -145,9 +174,10 @@ async function ghOutput(exec: CiExec, args: string[]): Promise<string | undefine
  * answered in `previous` for the same id and updatedAt keeps that answer
  * without another `gh run view`; a failed view is retried (S66). Undefined:
  * the read failed or timed out (keep what is shown); null: no runs.
+ * `mode` is read and set for the installed gh (S39).
  */
-export async function readCi(exec: CiExec, branch: string, previous?: CiRuns, now: () => number = Date.now): Promise<CiRuns | null | undefined> {
-	const stdout = await ghOutput(exec, ciListArgs(branch));
+export async function readCi(exec: CiExec, branch: string, previous?: CiRuns, now: () => number = Date.now, mode: CiMode = {}): Promise<CiRuns | null | undefined> {
+	const stdout = await listOutput(exec, branch, mode);
 	const read = stdout === undefined ? undefined : ciRunsFromList(stdout);
 	if (!read) return read;
 	const readAt = now();
