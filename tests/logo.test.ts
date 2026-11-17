@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { COMPACT_LOGO_WIDTH, LOGO_WIDTH, renderLogo } from "../lib/logo.ts";
+import { _resetPalette, _setActivePalette, KNOWN_TAG_PALETTES } from "../lib/palette.ts";
 import { visibleWidth } from "../lib/text.ts";
 
 const plain = (line: string) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -163,5 +164,30 @@ test("no flower and every logo line fits at 55, 51, 47, 45, 44, 40, 30, 20, 11, 
 			assert.ok(!line.includes("✿"), `flower at ${width}`);
 			assert.ok(visibleWidth(line) <= width, `${width}`);
 		}
+	}
+});
+
+test("logo dynamically renders with the switched palette colors when palette token changes", () => {
+	try {
+		// Switch to coral
+		const coral = KNOWN_TAG_PALETTES.coral;
+		_setActivePalette(coral.accent, coral.deep);
+		const linesCoral = renderLogo(51);
+		const topPixelCoral = cellColors(linesCoral[0]).get(30);
+		assert.deepEqual(topPixelCoral, [...coral.accent], "SHELL top pixel row takes coral accent");
+
+		// Switch to emerald
+		const emerald = KNOWN_TAG_PALETTES.emerald;
+		_setActivePalette(emerald.accent, emerald.deep);
+		const linesEmerald = renderLogo(51);
+		const topPixelEmerald = cellColors(linesEmerald[0]).get(30);
+		assert.deepEqual(topPixelEmerald, [...emerald.accent], "SHELL top pixel row takes emerald accent");
+
+		// Narrow text mark (30 columns)
+		const linesEmeraldNarrow = renderLogo(30);
+		const narrowColors = cellColors(linesEmeraldNarrow[0]);
+		assert.deepEqual(narrowColors.get(12), [...emerald.accent], "SHELL narrow text mark takes emerald accent");
+	} finally {
+		_resetPalette();
 	}
 });

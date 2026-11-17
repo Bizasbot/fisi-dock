@@ -40,10 +40,29 @@ export function readDockThemeApplied(path: string): boolean {
  */
 export function writeDockEnabled(path: string, enabled: boolean, theme?: string, themeApplied = false): boolean {
 	try {
+		const mcpExpanded = readState(path)?.mcpExpanded;
 		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ enabled, ...(theme ? { theme } : {}), ...(themeApplied ? { themeApplied } : {}) })}\n`);
+		writeFileSync(path, `${JSON.stringify({ enabled, ...(theme ? { theme } : {}), ...(themeApplied ? { themeApplied } : {}), ...(mcpExpanded !== undefined ? { mcpExpanded } : {}) })}\n`);
 		return true;
 	} catch {
 		return false;
 	}
 }
+
+/** Whether the MCP dropdown is expanded on the rail; false (collapsed) by default. */
+export function readMcpExpanded(path: string): boolean {
+	return readState(path)?.mcpExpanded === true;
+}
+
+/** Saves the MCP dropdown state `{ "mcpExpanded": … }` preserving existing state properties. */
+export function writeMcpExpanded(path: string, mcpExpanded: boolean): boolean {
+	try {
+		const current = readState(path) ?? {};
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify({ ...current, mcpExpanded })}\n`);
+		return true;
+	} catch {
+		return false;
+	}
+}
+

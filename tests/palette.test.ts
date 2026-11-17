@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { panelVivid, vivid, type Rgb } from "../lib/palette.ts";
+import {
+	_resetPalette,
+	_setActivePalette,
+	getPaletteToken,
+	KNOWN_TAG_PALETTES,
+	onPaletteChange,
+	palette,
+	panelVivid,
+	vivid,
+	type Rgb,
+} from "../lib/palette.ts";
 
 const rgb = (hex: string): Rgb => [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16)) as unknown as Rgb;
 
@@ -38,4 +48,49 @@ test("panelVivid goes 75% of the way from a color to its vivid one", () => {
 		["#ff76c3", "#f848aa"], // rose
 	];
 	for (const [pastel, expected] of examples) assert.deepEqual([...panelVivid(rgb(pastel))], [...rgb(expected)], `${pastel} -> ${expected}`);
+});
+
+test("KNOWN_TAG_PALETTES covers all standard Herdr tag presets with distinct accent and deep tones", () => {
+	const expected = ["gentleman", "default", "coral", "emerald", "amber", "sky", "violet", "teal"];
+	for (const name of expected) {
+		assert.ok(name in KNOWN_TAG_PALETTES, `missing ${name}`);
+		const pal = KNOWN_TAG_PALETTES[name];
+		assert.equal(pal.accent.length, 3);
+		assert.equal(pal.deep.length, 3);
+		// Deep shade should be darker or equal in luminance
+		const accentSum = pal.accent[0] + pal.accent[1] + pal.accent[2];
+		const deepSum = pal.deep[0] + pal.deep[1] + pal.deep[2];
+		assert.ok(deepSum <= accentSum, `${name}: deep shade should be darker than accent`);
+	}
+});
+
+test("dynamic palette switching updates sexyPink, sexyDeepPink, frame, token and notifies listeners", () => {
+	try {
+		let notified = 0;
+		const unsubscribe = onPaletteChange(() => {
+			notified++;
+		});
+
+		// Switch to coral
+		const coral = KNOWN_TAG_PALETTES.coral;
+		_setActivePalette(coral.accent, coral.deep);
+		assert.deepEqual([...palette.sexyPink], [...coral.accent]);
+		assert.deepEqual([...palette.sexyDeepPink], [...coral.deep]);
+		assert.deepEqual([...palette.frame], [...coral.accent]);
+		assert.equal(getPaletteToken(), `${coral.accent.join("-")}:${coral.deep.join("-")}`);
+		assert.equal(notified, 1);
+
+		// Switch to emerald
+		const emerald = KNOWN_TAG_PALETTES.emerald;
+		_setActivePalette(emerald.accent, emerald.deep);
+		assert.deepEqual([...palette.sexyPink], [...emerald.accent]);
+		assert.deepEqual([...palette.sexyDeepPink], [...emerald.deep]);
+		assert.deepEqual([...palette.frame], [...emerald.accent]);
+		assert.equal(getPaletteToken(), `${emerald.accent.join("-")}:${emerald.deep.join("-")}`);
+		assert.equal(notified, 2);
+
+		unsubscribe();
+	} finally {
+		_resetPalette();
+	}
 });

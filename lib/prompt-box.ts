@@ -13,6 +13,7 @@
 // before it (S96); with the clock the wave sweeps both and the petal turns by
 // the same clock (S97).
 import { waveLabel, wavePetal } from "./label-wave.ts";
+import { spinnerAt } from "./orbs.ts";
 import { fg, palette, vivid } from "./palette.ts";
 import { promptLineSteps, type PromptLineModel, type PromptLinePart } from "./prompt-line.ts";
 import { ellipsize, padEnd, sliceColumns, truncateToWidth, visibleWidth } from "./text.ts";
@@ -32,11 +33,18 @@ const GENTLE_TAIL = /^ (.*) ─$/;
 /** Gentle Shell's selection engine writes this on the blank bottom row while text is selected (lib/selection-engine.ts). */
 const SELECTION_LABEL = /chars? selected - Del deletes - Alt\+a select all/;
 /** Gentle Shell's ODD phases: lib/odd-phase.ts ODD_PHASES, written `${phase}…` by oddPhaseLabel. */
-const ODD_PHASES = ["authorizing", "exploring", "researching", "deciding", "planning", "implementing", "checking", "closing"];
+const ODD_PHASES = [
+	"authorizing", "exploring", "researching", "deciding", "planning", "implementing", "checking", "closing",
+	"autorizando", "explorando", "investigando", "decidiendo", "planificando", "implementando", "verificando", "cerrando",
+];
 const ODD_PHASE_LABEL = new RegExp(`^(?:${ODD_PHASES.join("|")})…$`);
 const ODD_PREFIX = "ODD ";
 /** Gentle Shell's busy labels it may paint whole (lib/shell-prompt.ts STATE_LABEL, oddPhaseLabel): `queued`, and `working…` or a phase in a theme without colors. */
-const BUSY_LABELS = ["working…", "queued", ...ODD_PHASES.map((phase) => `${phase}…`)];
+const BUSY_LABELS = [
+	"working…", "queued",
+	"trabajando…", "en cola",
+	...ODD_PHASES.map((phase) => `${phase}…`),
+];
 /** Pi's editor scroll indicator (`↑ 3 more`), shown by Gentle Shell instead of its state label (lib/shell-prompt.ts SCROLL_INDICATOR). */
 const SCROLL_LABEL = /^[↑↓]/u;
 const ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[_P^X][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -44,6 +52,11 @@ const ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[
 const strip = (text: string) => text.replace(ESCAPES, "");
 const countEscapes = (text: string) => text.match(ESCAPES)?.length ?? 0;
 const frame = (text: string) => fg(palette.frame, text);
+
+/** Attachment hint glyph shown when `labels.clip` is true (1 column, safe on any terminal). */
+const CLIP_GLYPH = "⊕";
+/** Column cost of the clip glyph (always 1). */
+const CLIP_WIDTH = 1;
 
 export interface PromptBox {
 	rows: string[];
@@ -200,7 +213,21 @@ export function boxPromptRows(rows: string[], width: number, topRowCount: number
 		if (idle) compact.some((step) => [...withHint(step), step].some((choice) => fit(bare, [choice]) || fit(petalOnly, [choice])));
 		else fit(head, right ? compact.flatMap(withHint) : compact);
 	}
-	const ruleRow = `${frame("╭─ ")}${petal} ${head.plain === "" ? "" : `${head.styled} `}${frame("─".repeat(fill))}${right ? ` ${right.styled} ${frame("─╮")}` : frame("─╮")}`;
+	// Right-end extras: paperclip attachment hint and/or working spinner, drawn between the fill dashes and ─╮.
+	const clipPlain = labels.clip ? CLIP_GLYPH : "";
+	const spinnerPlain = labels.spinner !== undefined ? spinnerAt(labels.spinner) : "";
+	const extraParts = [clipPlain, spinnerPlain].filter(Boolean);
+	const extraPlain = extraParts.join(" ");
+	// Suppress extras when Gentle Shell's own hint is present anywhere on the right.
+	const hasGentleHint = gentleRight !== undefined && right !== undefined && (right === gentleRight || right.plain.includes(gentleRight.plain));
+	// Each extra costs its own width + 1 leading space; require ≥1 fill dash to remain.
+	const extraCost = extraPlain ? visibleWidth(extraPlain) + 1 : 0;
+	const showExtras = extraPlain !== "" && !hasGentleHint && fill - extraCost >= 1;
+	const fillDashes = showExtras ? fill - extraCost : fill;
+	const extraStyled = showExtras
+		? ` ${clipPlain ? fg(palette.muted, clipPlain) : ""}${clipPlain && spinnerPlain ? " " : ""}${spinnerPlain ? fg(palette.teal, spinnerPlain) : ""}`
+		: "";
+	const ruleRow = `${frame("╭─ ")}${petal} ${head.plain === "" ? "" : `${head.styled} `}${frame("─".repeat(fillDashes))}${right ? `${extraStyled} ${right.styled} ${frame("─╮")}` : `${extraStyled}${frame("─╮")}`}`;
 	const ruleShift = LEFT_COLUMNS;
 
 	const inner = columns - FRAME_COLUMNS;

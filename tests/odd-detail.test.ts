@@ -28,11 +28,11 @@ test("tool calls become actions; paths are relative to the session folder (S60)"
 
 test("the active step says what its last tool is doing (S60)", () => {
 	const detail = (kind: OddAction["kind"], target: string) => actionDetail({ kind, target });
-	assert.deepEqual(detail("edit", "lib/a.ts"), { text: "editing lib/a.ts", keepEnd: true });
-	assert.deepEqual(detail("write", "lib/a.ts"), { text: "writing lib/a.ts", keepEnd: true });
-	assert.deepEqual(detail("read", "lib/a.ts"), { text: "reading lib/a.ts", keepEnd: true });
-	assert.deepEqual(detail("search", "renderTable"), { text: 'searching "renderTable"' });
-	assert.deepEqual(detail("run", "npm test"), { text: "running npm test" });
+	assert.deepEqual(detail("edit", "lib/a.ts"), { text: "editando lib/a.ts", keepEnd: true });
+	assert.deepEqual(detail("write", "lib/a.ts"), { text: "archivando lib/a.ts", keepEnd: true });
+	assert.deepEqual(detail("read", "lib/a.ts"), { text: "leyendo lib/a.ts", keepEnd: true });
+	assert.deepEqual(detail("search", "renderTable"), { text: 'buscando "renderTable"' });
+	assert.deepEqual(detail("run", "npm test"), { text: "ejecutando npm test" });
 	assert.deepEqual(detail("agent", "worker · tables"), { text: "worker · tables" });
 });
 
@@ -43,19 +43,19 @@ const run = (target: string): OddAction => ({ kind: "run", target });
 
 test("a finished step keeps a summary of what it did: edits, then agents, then commands, then reads (S60)", () => {
 	assert.equal(stepSummary(undefined), undefined, "no actions, no summary");
-	assert.deepEqual(sum(edit("lib/a.ts")), { text: "edited lib/a.ts", keepEnd: true });
-	assert.deepEqual(sum(edit("lib/a.ts"), edit("lib/a.ts")), { text: "edited lib/a.ts", keepEnd: true }, "the same file counts once");
-	assert.deepEqual(sum(edit("lib/tables/head.ts"), { kind: "write", target: "lib/tables/row.ts" }, edit("lib/tables/head.ts")), { text: "edited lib/tables/", keepEnd: true, tail: " · 2 files" });
-	assert.deepEqual(sum(edit("lib/tables/head.ts"), edit("lib/tables/deep/row.ts")), { text: "edited lib/tables/", keepEnd: true, tail: " · 2 files" }, "deepest common folder");
-	assert.deepEqual(sum(edit("a.ts"), edit("lib/b.ts")), { text: "edited 2 files" }, "no common folder");
-	assert.deepEqual(sum(read("lib/a.ts"), run("npm test"), { kind: "agent", target: "worker · tables" }, edit("lib/a.ts")), { text: "edited lib/a.ts", keepEnd: true }, "edits win");
+	assert.deepEqual(sum(edit("lib/a.ts")), { text: "editado lib/a.ts", keepEnd: true });
+	assert.deepEqual(sum(edit("lib/a.ts"), edit("lib/a.ts")), { text: "editado lib/a.ts", keepEnd: true }, "the same file counts once");
+	assert.deepEqual(sum(edit("lib/tables/head.ts"), { kind: "write", target: "lib/tables/row.ts" }, edit("lib/tables/head.ts")), { text: "editado lib/tables/", keepEnd: true, tail: " · 2 archivos" });
+	assert.deepEqual(sum(edit("lib/tables/head.ts"), edit("lib/tables/deep/row.ts")), { text: "editado lib/tables/", keepEnd: true, tail: " · 2 archivos" }, "deepest common folder");
+	assert.deepEqual(sum(edit("a.ts"), edit("lib/b.ts")), { text: "editado 2 archivos" }, "no common folder");
+	assert.deepEqual(sum(read("lib/a.ts"), run("npm test"), { kind: "agent", target: "worker · tables" }, edit("lib/a.ts")), { text: "editado lib/a.ts", keepEnd: true }, "edits win");
 	assert.deepEqual(sum(run("npm test"), { kind: "agent", target: "worker · tables" }), { text: "worker · tables" }, "then the last agent");
-	assert.deepEqual(sum(read("lib/a.ts"), run("npm test")), { text: "ran npm test" }, "then commands");
-	assert.deepEqual(sum(run("node --test a.test.ts"), run("npm test"), run("npm test")), { text: "ran npm test", tail: " · +2 more" }, "the last command and how many before it");
-	assert.deepEqual(sum(read("lib/a.ts"), read("lib/a.ts")), { text: "read lib/a.ts", keepEnd: true });
-	assert.deepEqual(sum(read("lib/a.ts"), read("lib/b.ts"), read("README.md"), { kind: "search", target: "x" }), { text: "read 3 files · 1 search" });
-	assert.deepEqual(sum({ kind: "search", target: "x" }, { kind: "search", target: "y" }), { text: "2 searches" });
-	assert.deepEqual(sum(read("lib/a.ts"), { kind: "search", target: "x" }, { kind: "search", target: "y" }), { text: "read 1 file · 2 searches" });
+	assert.deepEqual(sum(read("lib/a.ts"), run("npm test")), { text: "ejecutó npm test" }, "then commands");
+	assert.deepEqual(sum(run("node --test a.test.ts"), run("npm test"), run("npm test")), { text: "ejecutó npm test", tail: " · +2 más" }, "the last command and how many before it");
+	assert.deepEqual(sum(read("lib/a.ts"), read("lib/a.ts")), { text: "leído lib/a.ts", keepEnd: true });
+	assert.deepEqual(sum(read("lib/a.ts"), read("lib/b.ts"), read("README.md"), { kind: "search", target: "x" }), { text: "leído 3 archivos · 1 búsqueda" });
+	assert.deepEqual(sum({ kind: "search", target: "x" }, { kind: "search", target: "y" }), { text: "2 búsquedas" });
+	assert.deepEqual(sum(read("lib/a.ts"), { kind: "search", target: "x" }, { kind: "search", target: "y" }), { text: "leído 1 archivo · 2 búsquedas" });
 });
 
 const record = (...actions: OddAction[]) => actions.reduce<StepActions | undefined>(addAction, undefined);
@@ -63,15 +63,15 @@ const many = (count: number, make: (index: number) => OddAction) => Array.from({
 
 test("past 256 distinct files a step says 256+ instead of a wrong count, and keeps a bounded record (S61)", () => {
 	const flood = record(...many(1000, (index) => edit(`lib/gen/file-${index}.ts`)));
-	assert.deepEqual(stepSummary(flood), { text: "edited lib/gen/", keepEnd: true, tail: " · 256+ files" });
+	assert.deepEqual(stepSummary(flood), { text: "editado lib/gen/", keepEnd: true, tail: " · 256+ archivos" });
 	assert.ok(JSON.stringify(flood).length < 20_000, "the record stays small");
 	const twice = record(...many(200, (index) => edit(`lib/gen/file-${index}.ts`)), ...many(200, (index) => edit(`lib/gen/file-${index}.ts`)));
-	assert.deepEqual(stepSummary(twice), { text: "edited lib/gen/", keepEnd: true, tail: " · 200 files" }, "repeats never count");
+	assert.deepEqual(stepSummary(twice), { text: "editado lib/gen/", keepEnd: true, tail: " · 200 archivos" }, "repeats never count");
 	const capped = record(...many(256, (index) => edit(`lib/gen/file-${index}.ts`)), edit("lib/gen/file-0.ts"));
-	assert.deepEqual(stepSummary(capped), { text: "edited lib/gen/", keepEnd: true, tail: " · 256 files" }, "a repeat at the cap is still a repeat");
+	assert.deepEqual(stepSummary(capped), { text: "editado lib/gen/", keepEnd: true, tail: " · 256 archivos" }, "a repeat at the cap is still a repeat");
 	const past = record(...many(300, (index) => edit(`lib/gen/a/file-${index}.ts`)), edit("lib/other/b.ts"));
-	assert.deepEqual(stepSummary(past), { text: "edited lib/", keepEnd: true, tail: " · 256+ files" }, "the folder follows paths past the cap");
-	assert.deepEqual(stepSummary(record(...many(300, (index) => read(`docs/page-${index}.md`)))), { text: "read 256+ files" }, "reads too");
+	assert.deepEqual(stepSummary(past), { text: "editado lib/", keepEnd: true, tail: " · 256+ archivos" }, "the folder follows paths past the cap");
+	assert.deepEqual(stepSummary(record(...many(300, (index) => read(`docs/page-${index}.md`)))), { text: "leído 256+ archivos" }, "reads too");
 });
 
 test("tool arguments lose escape sequences and control characters before they reach the panel (S61)", () => {
@@ -96,26 +96,26 @@ test("paths match the session folder case-insensitively only for Windows drive a
 });
 
 test("a detail fits its width: paths keep their end from a folder boundary, the rest is cut at the end (S60)", () => {
-	const path = { text: "editing lib/some/very/long/folder/tables/table-row.ts", keepEnd: true };
+	const path = { text: "editando lib/some/very/long/folder/tables/table-row.ts", keepEnd: true };
 	assert.equal(fitDetail(path, 60), path.text, "fits as is");
-	assert.equal(fitDetail(path, 30), "editing …/tables/table-row.ts", "cut at a /");
-	assert.equal(fitDetail({ text: "editing lib/a-very-long-file-name-without-folders.ts", keepEnd: true }, 30), "editing …me-without-folders.ts", "a file name longer than the room: its end");
-	assert.equal(fitDetail({ text: "running node --test tests/tables.test.ts" }, 20), "running node --test…");
+	assert.equal(fitDetail(path, 30), "editando …/tables/table-row.ts", "cut at a /");
+	assert.equal(fitDetail({ text: "editando lib/a-very-long-file-name-without-folders.ts", keepEnd: true }, 30), "editando …e-without-folders.ts", "a file name longer than the room: its end");
+	assert.equal(fitDetail({ text: "ejecutando node --test tests/tables.test.ts" }, 20), "ejecutando node --t…");
 	for (const width of [41, 20, 9, 5, 2, 1, 0]) {
-		for (const detail of [path, { text: "running node --test tests/tables.test.ts" }]) assert.ok(visibleWidth(fitDetail(detail, width)) <= width, `${width}: ${fitDetail(detail, width)}`);
+		for (const detail of [path, { text: "ejecutando node --test tests/tables.test.ts" }]) assert.ok(visibleWidth(fitDetail(detail, width)) <= width, `${width}: ${fitDetail(detail, width)}`);
 	}
 });
 
 test("a summary's count stays whole when its line is cut; only the path before it is cut, at a folder (S61)", () => {
-	const folder = { text: "edited lib/some/long/folder/tables/", keepEnd: true, tail: " · 12 files" };
-	assert.equal(detailText(folder), "edited lib/some/long/folder/tables/ · 12 files");
-	assert.equal(fitDetail(folder, 60), "edited lib/some/long/folder/tables/ · 12 files", "fits as is");
-	assert.equal(fitDetail(folder, 30), "edited …/tables/ · 12 files");
-	const ran = { text: "ran node --test tests/odd-timeline.test.ts", tail: " · +2 more" };
-	assert.equal(fitDetail(ran, 30), "ran node --test tes… · +2 more");
-	assert.equal(detailText({ text: "ran npm test" }), "ran npm test", "no tail");
+	const folder = { text: "editado lib/some/long/folder/tables/", keepEnd: true, tail: " · 12 archivos" };
+	assert.equal(detailText(folder), "editado lib/some/long/folder/tables/ · 12 archivos");
+	assert.equal(fitDetail(folder, 60), "editado lib/some/long/folder/tables/ · 12 archivos", "fits as is");
+	assert.equal(fitDetail(folder, 30), "editado …tables/ · 12 archivos");
+	const ran = { text: "ejecutó node --test tests/odd-timeline.test.ts", tail: " · +2 más" };
+	assert.equal(fitDetail(ran, 30), "ejecutó node --test … · +2 más");
+	assert.equal(detailText({ text: "ejecutó npm test" }), "ejecutó npm test", "no tail");
 	for (const width of [47, 30, 20, 14, 12, 9, 5, 1, 0]) {
 		for (const detail of [folder, ran]) assert.ok(visibleWidth(fitDetail(detail, width)) <= width, `${width}: ${fitDetail(detail, width)}`);
 	}
-	assert.equal(fitDetail(folder, 12), "edited lib/…", "too narrow for the count: the whole line is cut at the end");
+	assert.equal(fitDetail(folder, 12), "editado lib…", "too narrow for the count: the whole line is cut at the end");
 });

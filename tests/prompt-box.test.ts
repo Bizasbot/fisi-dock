@@ -3,6 +3,7 @@ import test from "node:test";
 import { fgCode, palette, vivid } from "../lib/palette.ts";
 import { boxPromptRows, createPromptBox, FRAME_COLUMNS, MIN_BOX_WIDTH, PROMPT_OWNER, wrapPromptFactory } from "../lib/prompt-box.ts";
 import { WAVE_STEP_MS } from "../lib/label-wave.ts";
+import { spinnerAt } from "../lib/orbs.ts";
 import { SIDEBAR_STATE } from "../lib/slot.ts";
 import { visibleWidth } from "../lib/text.ts";
 
@@ -621,4 +622,60 @@ test("the mode, its dot and the effort draw vivid, the ODD wave passes in pastel
 	// Without the clock the ODD prefix stays muted beside Gentle Shell's own scan.
 	const still = boxPromptRows(gentleRows(56, { label: "checking…", scan: true }), 60, 0, LABELS).rows[0];
 	assert.ok(still.includes(`${fgCode(palette.muted)}ODD `) && still.includes(gsScan("checking…")), "Gentle Shell's scan as it painted it");
+});
+
+// --- right-rule extras: paperclip glyph (⊕) and working spinner ---
+
+test("clip glyph (⊕) appears on the right rule end when labels.clip is true; absent when false", () => {
+	const withClip = boxPromptRows(gentleRows(60, { text: ["hello"] }), 64, 0, { ...LABELS, clip: true });
+	const noClip = boxPromptRows(gentleRows(60, { text: ["hello"] }), 64, 0, LABELS);
+	assert.ok(plain(withClip.rows[0]).includes("⊕"), "clip glyph present");
+	assert.ok(!plain(noClip.rows[0]).includes("⊕"), "clip glyph absent without clip:true");
+	assert.equal(visibleWidth(withClip.rows[0]), 64, "rule still fills the full width");
+	// The clip glyph should appear between the fill dashes and the ─╮ corner.
+	const rule = plain(withClip.rows[0]);
+	const clipPos = rule.indexOf("⊕");
+	const cornerPos = rule.lastIndexOf("╮");
+	assert.ok(clipPos < cornerPos, "clip glyph precedes the ╮ corner");
+});
+
+test("spinner frame appears on the right rule end when labels.spinner is set; absent when undefined", () => {
+	const frame = spinnerAt(2); // ⠹ — the still frame
+	const withSpinner = boxPromptRows(gentleRows(60, { text: ["hello"] }), 64, 0, { ...LABELS, spinner: 2 });
+	const noSpinner = boxPromptRows(gentleRows(60, { text: ["hello"] }), 64, 0, LABELS);
+	assert.ok(plain(withSpinner.rows[0]).includes(frame), "spinner frame present");
+	assert.ok(!plain(noSpinner.rows[0]).includes(frame), "spinner frame absent without spinner set");
+	assert.equal(visibleWidth(withSpinner.rows[0]), 64, "rule still fills the full width");
+});
+
+test("clip + spinner together: both appear, rule width stays exact", () => {
+	const frame = spinnerAt(2);
+	const box = boxPromptRows(gentleRows(60, { text: ["hello"] }), 64, 0, { ...LABELS, clip: true, spinner: 2 });
+	const rule = plain(box.rows[0]);
+	assert.ok(rule.includes("⊕"), "clip glyph");
+	assert.ok(rule.includes(frame), "spinner frame");
+	// clip should precede spinner on the right-hand side
+	assert.ok(rule.indexOf("⊕") < rule.indexOf(frame), "clip before spinner");
+	assert.equal(visibleWidth(box.rows[0]), 64, "rule exact width");
+});
+
+test("extras are suppressed when there is no room (rule too tight), and when Gentle Shell's hint is present", () => {
+	// With a Gentle Shell hint on the right, our extras are suppressed (right segment takes that slot).
+	const withHint = boxPromptRows(gentleRows(56, { hint: "INSERT" }), 60, 0, { ...LABELS, clip: true, spinner: 2 });
+	assert.ok(!plain(withHint.rows[0]).includes("⊕"), "clip suppressed when hint present");
+	// Tight but not too tight: extras need at least 1 fill dash.
+	// At very small widths, the box returns unchanged so no assertion needed beyond no crash.
+	const tight = boxPromptRows(gentleRows(16, {}), 20, 0, { ...LABELS, clip: true, spinner: 2 });
+	for (const row of tight.rows) assert.ok(visibleWidth(row) <= 20, "no overflow even when tight");
+});
+
+test("spinner animated frame differs from the still frame (spinnerAt changes with index)", () => {
+	const still = spinnerAt(2);
+	const moving = spinnerAt(5);
+	assert.notEqual(still, moving, "spinner frames differ");
+	// Both show correctly in the rule.
+	const boxStill = boxPromptRows(gentleRows(60, {}), 64, 0, { ...LABELS, spinner: 2 });
+	const boxMoving = boxPromptRows(gentleRows(60, {}), 64, 0, { ...LABELS, spinner: 5 });
+	assert.ok(plain(boxStill.rows[0]).includes(still), "still frame rendered");
+	assert.ok(plain(boxMoving.rows[0]).includes(moving), "moving frame rendered");
 });

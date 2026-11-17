@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ciLive, gitPushTool, readCi, type CiRuns } from "../lib/ci.ts";
-import { dockStatePath, readDockEnabled, readDockTheme, readDockThemeApplied, writeDockEnabled } from "../lib/dock-state.ts";
+import { dockStatePath, readDockEnabled, readDockTheme, readDockThemeApplied, readMcpExpanded, writeDockEnabled, writeMcpExpanded } from "../lib/dock-state.ts";
 import { headerPath, renderHeaderLine, renderNarrowHeader } from "../lib/header.ts";
 import { readHeadsUpGit, readOddPlans } from "../lib/heads-up.ts";
 import {
@@ -22,12 +22,17 @@ import { createLiveStore, createSerialRefresh, createSpinnerClock, readGit, type
 import { installLoadedBox } from "../lib/loaded-box.ts";
 import { MCP_GRACE_MS, mcpConfigPaths, mcpServerStates, readMcpServerNames } from "../lib/mcp.ts";
 import { memoryCallEnd, memoryInfo, NO_MEMORY_CALLS } from "../lib/memory.ts";
+import { checkPamcEndpoint, fetchPamcAccountQuotas, fetchPamcPrices, getCachedPamcAccountQuotas, readPamcInfo, togglePamcAccount, watchPamcAuths, type PamcAccountQuota } from "../lib/pamc.ts";
+import { computeModalDimensions, frameModalBackdrop, renderAccountsModal, type ModalTab } from "../lib/accounts-modal.ts";
+import { computeModalDimensions as computeMcpDimensions, extractServerDetails, renderMcpModal } from "../lib/mcp-modal.ts";
 import { readSessionProfile } from "../lib/profile.ts";
 import { createOddTracker, type OddTracker } from "../lib/odd-timeline.ts";
 import { readOrbMotion } from "../lib/orbs.ts";
 import { renderAgentsCard, renderDock, renderPanel, renderTodoCard } from "../lib/panel.ts";
-import { estimateSessionCost, registryPrices, type ModelFinder } from "../lib/pricing.ts";
+import { DEFAULT_MODEL_PRICES, estimateSessionCost, registryPrices, type ModelFinder, type PriceRates } from "../lib/pricing.ts";
 import { createWaveClock, type WaveClock } from "../lib/label-wave.ts";
+import { createLogoClock, type LogoClock } from "../lib/logo-clock.ts";
+import { getPaletteToken, syncPaletteFromDisk, watchPalette } from "../lib/palette.ts";
 import { createPromptBox, type EditorHost, type PromptBoxInstall } from "../lib/prompt-box.ts";
 import { renderPromptLine } from "../lib/prompt-line.ts";
 import { reduceReviews, reviewSnapshot, withTrail, type RddRow } from "../lib/rdd.ts";
@@ -112,6 +117,406 @@ function terminalRows(tui: Host): number | undefined {
 	return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+function terminalCols(tui: Host): number | undefined {
+	const value = Math.floor(Number((tui.terminal as { columns?: unknown } | undefined)?.columns));
+	return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+let sharedModalDrag = { offsetX: 0, offsetY: 0 };
+
+/**
+ * The accounts quota popup modal overlay: lists PAMC accounts with 5h and weekly real token usage,
+ * spectrum gauge meters, status badges and scroll navigation.
+ */
+function accountsModalOverlay(tui: Host, keys: Keys, done: () => void, opts: { cleanBackdrop?: boolean } = {}) {
+	const cleanBackdrop = opts.cleanBackdrop ?? true;
+	sharedModalDrag = { offsetX: 0, offsetY: 0 };
+	const initialCached = getCachedPamcAccountQuotas();
+	let accounts: PamcAccountQuota[] = initialCached ?? [];
+	let loading = accounts.length === 0;
+	let activeTab: ModalTab = "active";
+	let selectedIndex = 0;
+	let scrollOffset = 0;
+	let toggling = false;
+	let actionAccountIndex: number | null = null;
+
+	// Mouse drag & drop state
+	let userLeft: number | undefined;
+	let userTop: number | undefined;
+	let isDragging = false;
+	let dragStartX = 0;
+	let dragStartY = 0;
+	let dragOriginLeft = 0;
+	let dragOriginTop = 0;
+
+	const is = (data: string, keybinding: string) => attempt(() => keys.matches(data, keybinding)) === true;
+
+	let pollTimer: NodeJS.Timeout | undefined;
+
+	const refreshData = () => {
+		void fetchPamcAccountQuotas().then((result) => {
+			loading = false;
+			toggling = false;
+			if (Array.isArray(result) && result.length > 0) {
+				accounts = result;
+			}
+			tui.requestRender();
+		}).catch(() => {
+			loading = false;
+			toggling = false;
+			tui.requestRender();
+		});
+	};
+
+	refreshData();
+	// Poll every 5s while modal is open to keep token metrics 100% updated live
+	pollTimer = setInterval(refreshData, 5000);
+	pollTimer.unref?.();
+
+	const close = () => {
+		if (pollTimer) clearInterval(pollTimer);
+		done();
+	};
+
+	const getCurrentList = () => (activeTab === "active" ? accounts.filter((a) => !a.disabled) : accounts.filter((a) => a.disabled));
+
+	const applyToggle = (target: PamcAccountQuota, nextDisabled: boolean) => {
+		if (toggling) return;
+		toggling = true;
+		target.disabled = nextDisabled;
+		actionAccountIndex = null;
+		tui.requestRender();
+
+		void togglePamcAccount(target.name, nextDisabled).then((ok) => {
+			if (ok) {
+				refreshData();
+			} else {
+				target.disabled = !nextDisabled;
+				toggling = false;
+				tui.requestRender();
+			}
+		});
+	};
+
+	return {
+		width: 64,
+		render: (width: number) => {
+			const rows = terminalRows(tui) ?? DOCK_FALLBACK_ROWS;
+			const dims = computeModalDimensions(width, rows);
+			const left = userLeft !== undefined ? Math.max(0, Math.min(width - dims.width, userLeft)) : dims.left;
+			const top = userTop !== undefined ? Math.max(0, Math.min(rows - dims.height, userTop)) : dims.top;
+			const boxLines = renderAccountsModal(accounts, selectedIndex, scrollOffset, dims.width, dims.height, loading, activeTab, toggling, actionAccountIndex, true);
+			if (!cleanBackdrop) {
+				return boxLines;
+			}
+			return frameModalBackdrop(boxLines, dims.width, width, rows, top, left);
+		},
+		handleInput: (data: string) => {
+			const lower = data.toLowerCase();
+			if (is(data, "tui.select.cancel") || data === "\x1b" || lower === "q" || lower === "s" || lower === "esc") {
+				if (actionAccountIndex !== null) {
+					actionAccountIndex = null;
+					tui.requestRender();
+					return;
+				}
+				return close();
+			}
+
+			// Tab switching: Tab, Left arrow, Right arrow, or 1/2
+			if (data === "\t" || is(data, "tui.select.left") || is(data, "tui.select.right") || data === "1" || data === "2") {
+				activeTab = activeTab === "active" ? "inactive" : "active";
+				selectedIndex = 0;
+				scrollOffset = 0;
+				actionAccountIndex = null;
+				tui.requestRender();
+				return;
+			}
+
+			const currentList = getCurrentList();
+			if (currentList.length === 0) return;
+
+			const rows = terminalRows(tui) ?? DOCK_FALLBACK_ROWS;
+			const termWidth = terminalCols(tui) ?? 80;
+			const dims = computeModalDimensions(termWidth, rows);
+			const visibleItems = Math.max(1, Math.floor((dims.height - 4) / 3));
+
+			if (is(data, "tui.select.up")) {
+				if (selectedIndex > 0) {
+					selectedIndex--;
+					if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+					actionAccountIndex = null;
+					tui.requestRender();
+				}
+				return;
+			}
+			if (is(data, "tui.select.down")) {
+				if (selectedIndex < currentList.length - 1) {
+					selectedIndex++;
+					if (selectedIndex >= scrollOffset + visibleItems) scrollOffset = selectedIndex - visibleItems + 1;
+					actionAccountIndex = null;
+					tui.requestRender();
+				}
+				return;
+			}
+
+			// Toggle active/inactive with Space, Enter, or dedicated 'a' (activate) / 'd' (deactivate)
+			const isToggle = data === " " || data === "\r" || data === "\n";
+			const isActivateCmd = lower === "a";
+			const isDeactivateCmd = lower === "d";
+
+			if (isToggle || isActivateCmd || isDeactivateCmd) {
+				const targetIdx = actionAccountIndex ?? selectedIndex;
+				const target = currentList[targetIdx];
+				if (!target) return;
+
+				let nextDisabled: boolean;
+				if (isActivateCmd) {
+					if (!target.disabled) return;
+					nextDisabled = false;
+				} else if (isDeactivateCmd) {
+					if (target.disabled) return;
+					nextDisabled = true;
+				} else {
+					nextDisabled = !target.disabled;
+				}
+
+				applyToggle(target, nextDisabled);
+				return;
+			}
+		},
+		handleMouse: (event: { type?: string; button?: string; x?: number; y?: number; wheelDelta?: number }) => {
+			const rows = terminalRows(tui) ?? DOCK_FALLBACK_ROWS;
+			const termWidth = terminalCols(tui) ?? 80;
+			const dims = computeModalDimensions(termWidth, rows);
+			const currentLeft = !cleanBackdrop
+				? (userLeft !== undefined ? userLeft : dims.left)
+				: (userLeft !== undefined ? Math.max(0, Math.min(termWidth - dims.width, userLeft)) : dims.left);
+			const currentTop = !cleanBackdrop
+				? (userTop !== undefined ? userTop : dims.top)
+				: (userTop !== undefined ? Math.max(0, Math.min(rows - dims.height, userTop)) : dims.top);
+
+			const x = event.x ?? 0;
+			const y = event.y ?? 0;
+			// En overlay nativo de Pi (cleanBackdrop: false), event.x e event.y ya son relativos al componente (0..dims.width, 0..dims.height)
+			const isInsideModal = !cleanBackdrop
+				? (x >= 0 && x < dims.width && y >= 0 && y < dims.height)
+				: (x >= currentLeft && x < currentLeft + dims.width && y >= currentTop && y < currentTop + dims.height);
+
+			const currentList = getCurrentList();
+			const visibleItems = Math.max(1, Math.floor((dims.height - 4) / 3));
+
+			// 1. Clic derecho en una cuenta -> despliega la opción de activar y desactivar
+			if (event.button === "right" && (event.type === "press" || event.type === "click")) {
+				const rowY = !cleanBackdrop ? y : y - currentTop;
+				if (isInsideModal && rowY >= 3 && rowY < dims.height - 1) {
+					const itemOffset = rowY - 3;
+					const clickedIndex = scrollOffset + Math.floor(itemOffset / 3);
+					if (clickedIndex >= 0 && clickedIndex < currentList.length) {
+						selectedIndex = clickedIndex;
+						actionAccountIndex = clickedIndex;
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+				}
+				// Si no es sobre una cuenta, cerrar el modal silenciosamente
+				close();
+				return { handled: true, render: true };
+			}
+
+			// 2. Rueda del ratón -> scroll en la lista de cuentas
+			if (event.type === "wheel" && event.wheelDelta) {
+				const delta = event.wheelDelta > 0 ? 1 : -1;
+				selectedIndex = Math.max(0, Math.min(Math.max(0, currentList.length - 1), selectedIndex + delta));
+				if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+				if (selectedIndex >= scrollOffset + visibleItems) scrollOffset = selectedIndex - visibleItems + 1;
+				tui.requestRender();
+				return { handled: true, render: true };
+			}
+
+			// 3. Clic izquierdo fuera del modal -> cerrar
+			if (event.type === "click" && event.button === "left" && !isInsideModal) {
+				close();
+				return { handled: true, render: true };
+			}
+
+			const modalY = !cleanBackdrop ? y : y - currentTop;
+			const modalX = !cleanBackdrop ? x : x - currentLeft;
+
+			// 4. Clic izquierdo en la barra inferior (cerrar) -> cerrar
+			if (event.type === "click" && event.button === "left" && modalY === dims.height - 1) {
+				close();
+				return { handled: true, render: true };
+			}
+
+			// 5. Clics sobre elementos interactivos dentro del modal
+			if (event.type === "click" && event.button === "left" && isInsideModal) {
+				// A) Clic en los botones de acción del sub-header (fila 1: modalY === 1)
+				if (actionAccountIndex !== null && modalY === 1) {
+					const target = currentList[actionAccountIndex];
+					if (target) {
+						const name = ellipsize(target.accountName, 16);
+						const actStart = 2 + 6 + visibleWidth(name);
+						const actEnd = actStart + 11;
+						const deactStart = actEnd + 2;
+						const deactEnd = deactStart + 14;
+						const cancelStart = deactEnd + 2;
+
+						if (modalX >= actStart && modalX < actEnd) {
+							applyToggle(target, false);
+							return { handled: true, render: true };
+						}
+						if (modalX >= deactStart && modalX < deactEnd) {
+							applyToggle(target, true);
+							return { handled: true, render: true };
+						}
+						if (modalX >= cancelStart) {
+							actionAccountIndex = null;
+							tui.requestRender();
+							return { handled: true, render: true };
+						}
+					}
+				}
+
+				// B) Clic en la lista de cuentas: selecciona la cuenta
+				if (modalY >= 3 && modalY < dims.height - 1) {
+					const itemOffset = modalY - 3;
+					const clickedIndex = scrollOffset + Math.floor(itemOffset / 3);
+					if (clickedIndex >= 0 && clickedIndex < currentList.length) {
+						if (actionAccountIndex === clickedIndex && Math.floor(itemOffset % 3) === 0) {
+							if (modalX >= dims.width - 28 && modalX < dims.width - 15) {
+								applyToggle(currentList[clickedIndex], false);
+								return { handled: true, render: true };
+							}
+							if (modalX >= dims.width - 15) {
+								applyToggle(currentList[clickedIndex], true);
+								return { handled: true, render: true };
+							}
+						}
+
+						selectedIndex = clickedIndex;
+						if (actionAccountIndex !== clickedIndex) {
+							actionAccountIndex = null;
+						}
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+				}
+			}
+
+			// 6. Arrastrar y mover el modal con el ratón por la pantalla
+			if (event.type === "press" && event.button === "left" && isInsideModal && modalY <= 2) {
+				isDragging = true;
+				dragStartX = x;
+				dragStartY = y;
+				dragOriginLeft = currentLeft;
+				dragOriginTop = currentTop;
+				return { handled: true, capture: true, render: false };
+			}
+
+			if (event.type === "drag" && isDragging) {
+				const dx = x - dragStartX;
+				const dy = y - dragStartY;
+				if (!cleanBackdrop) {
+					sharedModalDrag.offsetX = dragOriginLeft + dx;
+					sharedModalDrag.offsetY = dragOriginTop + dy;
+				} else {
+					userLeft = Math.max(0, Math.min(termWidth - dims.width, dragOriginLeft + dx));
+					userTop = Math.max(0, Math.min(rows - dims.height, dragOriginTop + dy));
+				}
+				tui.requestRender();
+				return { handled: true, render: true };
+			}
+
+			if (event.type === "release" && isDragging) {
+				isDragging = false;
+				// Si no se arrastró y se hizo clic en las pestañas (fila 0):
+				if (x === dragStartX && y === dragStartY && modalY === 0) {
+					activeTab = activeTab === "active" ? "inactive" : "active";
+					selectedIndex = 0;
+					scrollOffset = 0;
+					actionAccountIndex = null;
+					tui.requestRender();
+				}
+				return { handled: true, render: true };
+			}
+
+			return { handled: true, render: false };
+		},
+		invalidate() {},
+	};
+}
+
+/**
+ * The MCP servers visor modal overlay: lists configured MCP servers, status badges,
+ * connection health and registered tools per server.
+ */
+function mcpModalOverlay(pi: ExtensionAPI, session: LiveSession, tui: Host, keys: Keys, done: () => void) {
+	let selectedIndex = 0;
+	let scrollOffset = 0;
+
+	const is = (data: string, keybinding: string) => attempt(() => keys.matches(data, keybinding)) === true;
+
+	const getDetails = () => {
+		const servers = session.store.model().session.mcp ?? [];
+		const tools = attempt(() => pi.getAllTools()) ?? [];
+		return extractServerDetails(servers, Array.isArray(tools) ? tools : []);
+	};
+
+	return {
+		render: (width: number) => {
+			const rows = terminalRows(tui) ?? DOCK_FALLBACK_ROWS;
+			const dims = computeMcpDimensions(width, rows);
+			const details = getDetails();
+			return renderMcpModal(details, selectedIndex, scrollOffset, dims.width, dims.height);
+		},
+		handleInput: (data: string) => {
+			if (is(data, "tui.select.cancel") || data === "\x1b" || data.toLowerCase() === "q") {
+				return done();
+			}
+			const details = getDetails();
+			if (details.length === 0) return;
+			const rows = terminalRows(tui) ?? DOCK_FALLBACK_ROWS;
+			const dims = computeMcpDimensions(80, rows);
+			const visibleItems = Math.max(1, Math.floor((dims.height - 4) / 2));
+
+			if (is(data, "tui.select.up")) {
+				if (selectedIndex > 0) {
+					selectedIndex--;
+					if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+					tui.requestRender();
+				}
+				return;
+			}
+			if (is(data, "tui.select.down")) {
+				if (selectedIndex < details.length - 1) {
+					selectedIndex++;
+					if (selectedIndex >= scrollOffset + visibleItems) scrollOffset = selectedIndex - visibleItems + 1;
+					tui.requestRender();
+				}
+				return;
+			}
+		},
+		handleMouse: (event: { type?: string; wheelDelta?: number }) => {
+			if (event.type === "click") {
+				return { handled: true, render: false };
+			}
+			if (event.type === "wheel" && event.wheelDelta) {
+				const details = getDetails();
+				const rows = terminalRows(tui) ?? DOCK_FALLBACK_ROWS;
+				const dims = computeMcpDimensions(80, rows);
+				const visibleItems = Math.max(1, Math.floor((dims.height - 4) / 2));
+				const delta = event.wheelDelta > 0 ? 1 : -1;
+				selectedIndex = Math.max(0, Math.min(details.length - 1, selectedIndex + delta));
+				if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+				if (selectedIndex >= scrollOffset + visibleItems) scrollOffset = selectedIndex - visibleItems + 1;
+				return { handled: true, render: true };
+			}
+			return { handled: true, render: false };
+		},
+		invalidate() {},
+	};
+}
+
 /**
  * The /dock overlay: the live panel, scrolled with the selection keys when it
  * is taller than the screen; Esc (Pi's cancel binding) closes it.
@@ -125,7 +530,7 @@ function dockOverlay(session: LiveSession, tui: Host, keys: Keys, done: () => vo
 	};
 	return {
 		render: (width: number) => {
-			const view = renderDock(session.store.model(), width, rows(), offset);
+			const view = renderDock(session.store.model(), width, rows(), offset, session.logoClock.tick());
 			offset = view.offset;
 			return view.lines;
 		},
@@ -170,6 +575,7 @@ interface LiveSession {
 	/** ODD phase timeline of the current request. */
 	odd: OddTracker;
 	wave: WaveClock;
+	logoClock: LogoClock;
 	setHost(host: Host | undefined): void;
 	/** Patch Pi's user message class once one is on screen (S45); repaints once when it does. */
 	frameUsers(): void;
@@ -243,6 +649,12 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext): LiveSession {
 	});
 	// The prompt label's color wave (S90): by the clock, only while Gentle Shell scans its label.
 	const wave = createWaveClock({
+		now: Date.now,
+		motion: () => readOrbMotion(process.env, homedir()),
+		requestRender: () => attempt(() => host?.requestRender()),
+	});
+	// The wordmark logo animation (subtle neural glow sweep and breathing effect).
+	const logoClock = createLogoClock({
 		now: Date.now,
 		motion: () => readOrbMotion(process.env, homedir()),
 		requestRender: () => attempt(() => host?.requestRender()),
@@ -389,6 +801,46 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext): LiveSession {
 	// mem_* call did not fail: nothing is spawned and no server is asked.
 	let memoryCalls = NO_MEMORY_CALLS;
 	const memoryState = () => apply({ memory: memoryInfo(attempt(() => pi.getAllTools()), memoryCalls) });
+	let pamcFailures = 0;
+	let pamcOnline = true;
+	let pamcPrices: Record<string, PriceRates> | undefined;
+	let readPiRef: (() => void) | undefined;
+	const prewarmPamcQuotas = createSerialRefresh(async () => {
+		if (!disposed && pamcOnline) {
+			await fetchPamcAccountQuotas();
+		}
+	});
+	const syncPamcPrices = createSerialRefresh(async () => {
+		const fetched = await fetchPamcPrices();
+		if (fetched && !disposed) {
+			pamcPrices = fetched;
+			readPiRef?.();
+		}
+	});
+	const checkPamc = createSerialRefresh(async () => {
+		const alive = await checkPamcEndpoint();
+		if (alive) {
+			pamcFailures = 0;
+			if (!pamcOnline) {
+				pamcOnline = true;
+				pamcState();
+				void syncPamcPrices();
+			}
+		} else {
+			pamcFailures++;
+			if (pamcFailures >= 2 && pamcOnline) {
+				pamcOnline = false;
+				pamcState();
+			}
+		}
+	});
+	const pamcState = () => apply({ pamc: attempt(() => readPamcInfo(undefined, pamcOnline)) });
+	const pamcWatcher = attempt(() =>
+		watchPamcAuths(undefined, () => {
+			pamcState();
+			checkPamc();
+		}),
+	);
 	// User message box (S45): Pi's class is patched as soon as one user message
 	// is in the tree (a new session has none until the first prompt), retried on
 	// setHost, agent_start, turn_start and message_end. The patch is per class,
@@ -417,6 +869,8 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext): LiveSession {
 		plans();
 		mcpState();
 		memoryState();
+		pamcState();
+		checkPamc();
 		readProfile();
 		pruneAgents();
 	}, IDLE_REFRESH_MS);
@@ -453,13 +907,41 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext): LiveSession {
 		};
 		attempt(() => (pi.events as { emit?(channel: string, data: unknown): void }).emit?.(HOST_UI_CHANNEL, { context: ctx, respond }));
 	};
+	const readPi = () => {
+		const entries = attempt(() => ctx.sessionManager.getEntries());
+		// Subscriptions (claude-bridge) or proxies (PAMC) record tokens at cost 0 (S37): the
+		// estimate prices them with PAMC rates, Pi's registry, or default catalog.
+		// SAFETY: Pi's ModelRegistry has find(provider, id) returning a Model with `cost`, the only
+		// member ModelFinder uses; registryPrices also tolerates a missing or failing find.
+		const prices = registryPrices(attempt(() => ctx.modelRegistry as unknown as ModelFinder), pamcPrices, DEFAULT_MODEL_PRICES);
+		const cost = entries === undefined ? undefined : attempt(() => sessionCost(entries));
+		const tokens = entries === undefined ? undefined : attempt(() => sessionTokens(entries));
+		const estimate = entries === undefined ? undefined : attempt(() => estimateSessionCost(entries, prices));
+		apply({
+			usage: attempt(() => sessionUsage(ctx.getContextUsage())) ?? {},
+			cost,
+			tokens: entries === undefined ? undefined : tokens,
+			estimate: entries === undefined ? undefined : estimate,
+		});
+		readProfile();
+		mcpState();
+		memoryState();
+		pamcState();
+		checkPamc();
+		void syncPamcPrices();
+		void prewarmPamcQuotas();
+	};
+	readPiRef = readPi;
 	return {
 		store,
 		cwd,
 		odd,
 		wave,
+		logoClock,
 		setHost: (next) => {
 			host = next;
+			if (next) logoClock.start();
+			else logoClock.stop();
 			frameUsers();
 		},
 		frameUsers,
@@ -470,23 +952,7 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext): LiveSession {
 			const terminal = attempt(() => host?.terminal as Record<symbol, unknown> | undefined);
 			return terminal?.[SIDEBAR_STATE] ? frameUserLines(render, width) : render(width);
 		},
-		readPi: () => {
-			const entries = attempt(() => ctx.sessionManager.getEntries());
-			// Subscriptions (claude-bridge) record tokens at cost 0 (S37): the
-			// estimate prices them with Pi's registry (ModelRegistry.find -> Model.cost).
-			// SAFETY: Pi's ModelRegistry has find(provider, id) returning a Model with `cost`, the only
-			// member ModelFinder uses; registryPrices also tolerates a missing or failing find.
-			const prices = registryPrices(attempt(() => ctx.modelRegistry as unknown as ModelFinder));
-			apply({
-				usage: attempt(() => sessionUsage(ctx.getContextUsage())) ?? {},
-				cost: entries === undefined ? undefined : attempt(() => sessionCost(entries)),
-				tokens: entries === undefined ? undefined : attempt(() => sessionTokens(entries)),
-				estimate: entries === undefined ? undefined : attempt(() => estimateSessionCost(entries, prices)),
-			});
-			readProfile();
-			mcpState();
-			memoryState();
-		},
+		readPi,
 		readTodo: () => {
 			const manager = ctx.sessionManager as { getBranch?(): unknown[]; getEntries(): unknown[] };
 			apply({ todo: attempt(() => todoFromState(todoStateFromEntries(manager.getBranch?.() ?? manager.getEntries()))) });
@@ -547,7 +1013,9 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext): LiveSession {
 			odd.dispose();
 			spinner.dispose();
 			wave.dispose();
+			logoClock.dispose();
 			disposed = true;
+			attempt(() => pamcWatcher?.close());
 			attempt(() => unobserveMode?.());
 			attempt(() => modeAdapter?.dispose());
 			modeAdapter = undefined;
@@ -569,6 +1037,8 @@ export default function fisiDock(pi: ExtensionAPI): void {
 	// everything, from the start of each session.
 	const statePath = () => dockStatePath(process.env, attempt(() => homedir()) ?? "");
 	let enabled = readDockEnabled(statePath());
+	let mcpExpanded = readMcpExpanded(statePath());
+	let currentRailHost: Host | undefined;
 	// Says Fisi Dock is loaded (S24). Globals survive /reload, so the marker
 	// follows the session: a removed (or dormant) Fisi Dock never leaves it set.
 	setLoaded(enabled);
@@ -576,6 +1046,7 @@ export default function fisiDock(pi: ExtensionAPI): void {
 	let live: LiveSession | undefined;
 	// The prompt box (S88): Gentle Shell's editor factory wrapped while this session runs.
 	let promptBox: PromptBoxInstall | undefined;
+	let unwatchPalette: (() => void) | undefined;
 	// Gentle Shell is loaded when its banner command is registered. A host without
 	// getCommands cannot say, and counts as Gentle Shell, as before.
 	const gentleShellLoaded = () => {
@@ -657,12 +1128,58 @@ export default function fisiDock(pi: ExtensionAPI): void {
 		promptBox = undefined;
 		attempt(() => dropWelcome?.());
 		dropWelcome = undefined;
+		attempt(() => unwatchPalette?.());
+		unwatchPalette = undefined;
 		const done = release;
 		release = undefined;
 		done?.();
 		live?.dispose();
 		live = undefined;
 	};
+
+	// Modal popup command /cuentas to display real token quotas & usage per account.
+	pi.registerCommand("cuentas", {
+		description: "Mostrar modal con cuotas y consumo de tokens 5h y semanal por cada cuenta PAMC",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				attempt(() => ctx.ui.notify("Fisi Dock: UI no disponible", "info"));
+				return;
+			}
+			await ctx.ui.custom<void>(
+				(tui, _theme, keybindings, done) => {
+					return accountsModalOverlay(tui as Host, keybindings as unknown as Keys, () => done(), { cleanBackdrop: true });
+				},
+				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "center" } },
+			);
+		},
+	});
+
+	pi.registerCommand("mcp-toggle", {
+		description: "Alternar despliegue de lista de servidores MCP en el panel lateral",
+		handler: async (_args, ctx) => {
+			mcpExpanded = !mcpExpanded;
+			writeMcpExpanded(statePath(), mcpExpanded);
+			attempt(() => currentRailHost?.requestRender());
+			attempt(() => ctx.ui.notify(`MCP en panel: ${mcpExpanded ? "desplegado (▴)" : "agrupado (▾)"}`));
+		},
+	});
+
+	pi.registerCommand("mcp-visor", {
+		description: "Abrir visor modal completo con servidores MCP, estados y herramientas",
+		handler: async (_args, ctx) => {
+			const session = live;
+			if (!session || !ctx.hasUI) {
+				attempt(() => ctx.ui.notify("Fisi Dock: UI no disponible", "info"));
+				return;
+			}
+			await ctx.ui.custom<void>(
+				(tui, _theme, keybindings, done) => {
+					return mcpModalOverlay(pi, session, tui as Host, keybindings as unknown as Keys, () => done());
+				},
+				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "center" } },
+			);
+		},
+	});
 
 	// Narrow screens (S23 B): the full panel over everything, on demand. It reads
 	// the same live store as the rail, so it updates while open.
@@ -708,6 +1225,11 @@ export default function fisiDock(pi: ExtensionAPI): void {
 		session.readSubagents();
 		// Rows already there now (replayed todo, running jobs) stay still; new ones enter (S54).
 		session.store.loaded();
+		syncPaletteFromDisk();
+		unwatchPalette = watchPalette(() => {
+			attempt(() => currentRailHost?.requestRender());
+			attempt(() => (ctx.ui as any)?.requestRender?.());
+		});
 		// Permission mode, model and effort (S84, S88): `SUPER-YOLO · opus-5.5 · high`,
 		// the mode only when it is not normal, read per frame.
 		const labels = () => {
@@ -771,7 +1293,7 @@ export default function fisiDock(pi: ExtensionAPI): void {
 						const model = session.store.model();
 						const now = Date.now();
 						const running = model.agents?.some((agent) => agent.state === "running") ?? false;
-						const key = `${width}:${session.store.digest()}:${running ? Math.floor(now / 1000) : ""}`;
+						const key = `${width}:${session.store.digest()}:${running ? Math.floor(now / 1000) : ""}:${getPaletteToken()}`;
 						if (drawn?.key !== key) {
 							const agents = renderAgentsCard(model.agents, width, model.spinner, now);
 							const todo = renderTodoCard(model.todo, width, model.spinner);
@@ -785,10 +1307,79 @@ export default function fisiDock(pi: ExtensionAPI): void {
 			{ placement: "aboveEditor" },
 		);
 		ctx.ui.setWidget(WIDGET_KEY, (tui: Host) => {
+			currentRailHost = tui;
 			// Live content; the panel paints with its own design palette, not Pi
 			// theme roles. Frames read the cached digest and reuse the last lines.
 			session.setHost(tui);
 			let drawn: { key: string; lines: string[] } | undefined;
+			let lastPressAt = 0;
+			let released = false;
+
+			// Hook on ScrollView to ensure rail mouse events always dispatch even if layout hits are missing
+			const NODE_SYM = Symbol.for("pi.layout-node");
+			function findRailScrollView(comp: unknown, seen = new Set<unknown>()): any {
+				if (!comp || typeof comp !== "object" || seen.has(comp)) return undefined;
+				seen.add(comp);
+				const c = comp as Record<string | symbol, any>;
+				if (typeof c.scrollBy === "function" && typeof c.handleMouse === "function" && typeof c.getContentWidth === "function") {
+					return c;
+				}
+				const nodeFn = c[NODE_SYM];
+				if (typeof nodeFn === "function") {
+					const node = nodeFn.call(comp);
+					if (Array.isArray(node?.entries)) {
+						for (let i = node.entries.length - 1; i >= 0; i--) {
+							const found = findRailScrollView(node.entries[i]?.component, seen);
+							if (found) return found;
+						}
+					}
+				}
+				return undefined;
+			}
+
+			let scrollHookScheduled = false;
+			const ensureScrollHooked = () => {
+				if (scrollHookScheduled) return;
+				scrollHookScheduled = true;
+				queueMicrotask(() => {
+					scrollHookScheduled = false;
+					if (released) return;
+					try {
+						const root = (tui as unknown as { layoutRoot?: unknown })?.layoutRoot;
+						if (!root) return;
+						const scroll = findRailScrollView(root);
+						if (!scroll) return;
+						const HOOKED = Symbol.for("fisi-dock.scroll-hooked");
+						if (scroll[HOOKED]) return;
+						scroll[HOOKED] = true;
+						const origHandleMouse = scroll.handleMouse.bind(scroll);
+						scroll.handleMouse = (ev: unknown) => {
+							const res = origHandleMouse(ev);
+							if (res?.handled) return res;
+							const event = ev as { type?: string; button?: string; x?: number; y?: number; width?: number };
+							if (!event || (event.type !== "press" && event.type !== "click")) return res;
+							if (event.button && event.button !== "left" && event.button !== "none") return res;
+							const y = typeof event.y === "number" ? event.y : -1;
+							if (y < 0) return res;
+							const scrollTop = typeof scroll.scrollTop === "number" ? scroll.scrollTop : 0;
+							const contentY = scrollTop + y;
+							let offset = 0;
+							const child = (scroll as { child?: { render?: (w: number) => string[] } }).child;
+							const rendered = attempt(() => child?.render?.(event.width ?? 47));
+							if (Array.isArray(rendered)) {
+								const firstNonBlank = rendered.findIndex((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trim() !== "");
+								if (firstNonBlank >= 0) offset = firstNonBlank;
+							}
+							const mappedY = contentY - offset;
+							if (mappedY < 0) return res;
+							return rail.handleMouse({ ...event, y: mappedY }) ?? res;
+						};
+					} catch {
+						// Ignored: layout fallback is best-effort
+					}
+				});
+			};
+
 			// Short screens (S34b, S38): the panel fits the rows under the top row, so the
 			// rows are part of the memo key and of the digest Gentle Shell caches on.
 			const maxRows = () => {
@@ -796,11 +1387,13 @@ export default function fisiDock(pi: ExtensionAPI): void {
 				return rows === undefined ? undefined : Math.max(0, rows - RAIL_TOP_ROWS);
 			};
 			const rail = {
-				digest: () => `${session.store.digest()}:${maxRows() ?? ""}`,
+				digest: () => `${session.store.digest()}:${maxRows() ?? ""}:${session.logoClock.tick() ?? ""}:${mcpExpanded ? "1" : "0"}:${getPaletteToken()}`,
 				render: (width: number) => {
+					ensureScrollHooked();
 					const rows = maxRows();
-					const key = `${width}:${rows ?? ""}:${session.store.digest()}`;
-					if (drawn?.key !== key) drawn = { key, lines: renderPanel(session.store.model(), width, { maxRows: rows }) };
+					const logoTick = session.logoClock.tick();
+					const key = `${width}:${rows ?? ""}:${session.store.digest()}:${logoTick ?? ""}:${mcpExpanded ? "1" : "0"}:${getPaletteToken()}`;
+					if (drawn?.key !== key) drawn = { key, lines: renderPanel(session.store.model(), width, { maxRows: rows, mcpGrouped: true, mcpExpanded, logoTick }) };
 					return drawn.lines;
 				},
 				// Gentle Shell main wraps rail parts in its own card on a transparent surface:
@@ -809,6 +1402,70 @@ export default function fisiDock(pi: ExtensionAPI): void {
 				// clipped to the rail, wider than we draw. The 4.6.0 release never asks.
 				cardGroups: (width: number) => ({ groups: [], loose: rail.render(width).map((_, index) => index) }),
 				invalidate() {},
+				handleMouse: (event: { type?: string; y?: number; x?: number; button?: string }) => {
+					if (event?.button && event.button !== "left" && event.button !== "none") return undefined;
+					const isPress = event?.type === "press";
+					const isClick = event?.type === "click";
+					if (!isPress && !isClick) {
+						if (event?.type === "release") return { handled: true, render: false };
+						return undefined;
+					}
+
+					const now = Date.now();
+					if (isPress) {
+						lastPressAt = now;
+					} else if (isClick && now - lastPressAt < 800) {
+						// Ignorar click si ya fue procesado por press para evitar doble toggle
+						return { handled: true, render: false };
+					}
+
+					const lines = drawn?.lines ?? rail.render(terminalCols(tui) ?? 47);
+					const y = typeof event.y === "number" ? event.y : -1;
+					if (y < 0 || y >= lines.length) return undefined;
+
+					// Detección exacta de la fila cliqueada
+					const line = lines[y] ?? "";
+					const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+
+					// 1. Fila de PAMC / Ctas -> abre la ventana modal sobre el mismo frontend
+					const isPamcRow = plain.includes("pamc") || plain.includes("Ctas") || plain.includes("Cuentas") || plain.includes("↗");
+					if (isPamcRow && ctx.hasUI) {
+						void ctx.ui.custom<void>(
+							(customTui, _theme, keybindings, done) => {
+								return accountsModalOverlay(customTui as Host, keybindings as unknown as Keys, () => done(), { cleanBackdrop: false });
+							},
+							{
+								overlay: true,
+								overlayOptions: () => ({
+									anchor: "center",
+									width: 64,
+									maxHeight: 16,
+									offsetX: sharedModalDrag.offsetX,
+									offsetY: sharedModalDrag.offsetY,
+								}),
+							},
+						);
+						return { handled: true, render: true };
+					}
+
+					// 2. Fila de MCP / servidores -> despliega la lista hacia abajo en el panel
+					const isMcpHeaderRow = plain.includes("mcp") || plain.includes("servers") || plain.includes("server") || plain.includes("▼") || plain.includes("▲");
+					const mcpIdx = lines.findIndex((l) => {
+						const p = l.replace(/\x1b\[[0-9;]*m/g, "");
+						return p.includes("mcp");
+					});
+					const count = session.store.model().session.mcp?.length ?? 0;
+					const isMcpChildRow = mcpExpanded && mcpIdx >= 0 && y > mcpIdx && y <= mcpIdx + count;
+
+					if (isMcpHeaderRow || isMcpChildRow) {
+						mcpExpanded = !mcpExpanded;
+						writeMcpExpanded(statePath(), mcpExpanded);
+						drawn = undefined;
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+					return undefined;
+				},
 			};
 			// The top row shows only the path (S4) while our panel is on screen. In
 			// narrow fullscreen it is the only status row, so it carries project,
@@ -842,8 +1499,10 @@ export default function fisiDock(pi: ExtensionAPI): void {
 			const slots = [createSlotTakeover(STATUS_SLOT, rail), headerSlot, ...EMPTIED_PARTS.map((key) => createSlotTakeover(key, emptyPart()))];
 			const reassert = () => {
 				if (slots.map((slot) => slot.assert(tui.terminal)).some(Boolean)) tui.requestRender();
+				ensureScrollHooked();
 			};
 			const restore = () => {
+				released = true;
 				if (slots.map((slot) => slot.restore(tui.terminal)).some(Boolean)) tui.requestRender();
 			};
 			release = () => {
@@ -916,6 +1575,13 @@ export default function fisiDock(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const notify = (message: string, type: "info" | "warning" = "info") => void attempt(() => ctx.ui.notify(message, type));
 			let choice = args.trim().toLowerCase();
+			if (choice === "mcp") {
+				mcpExpanded = !mcpExpanded;
+				writeMcpExpanded(statePath(), mcpExpanded);
+				attempt(() => currentRailHost?.requestRender());
+				notify(`MCP dropdown: ${mcpExpanded ? "expanded (desplegado)" : "collapsed (agrupado)"}`);
+				return;
+			}
 			if (choice === "") {
 				// Alone (S98): a picker titled with the current state, the change first,
 				// so Enter switches it; Esc changes nothing. Without a picker, the state.

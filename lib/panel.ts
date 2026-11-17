@@ -3,7 +3,7 @@ import { entranceFlash, entranceText, type EntrancePiece } from "./entrance.ts";
 import { renderLogo } from "./logo.ts";
 import { fitDetail } from "./odd-detail.ts";
 import { orbAt, orbOf, orbWidth, shimmerText, spinnerAt } from "./orbs.ts";
-import type { AgentInfo, ChangeInfo, CiCheck, CiInfo, FooterInfo, HeadsUpWarning, McpServerInfo, OddInfo, PanelModel, RddInfo, RddReview, SessionInfo, TodoInfo, TodoTask } from "./panel-model.ts";
+import type { AgentInfo, ChangeInfo, CiCheck, CiInfo, FooterInfo, HeadsUpWarning, McpServerInfo, OddInfo, PamcInfo, PanelModel, RddInfo, RddReview, SessionInfo, TodoInfo, TodoTask } from "./panel-model.ts";
 import { shortAgentModel } from "./prompt-line.ts";
 import { RESET, bgCode, bold, dim, fg, palette, panelVivid, type Rgb } from "./palette.ts";
 import { ellipsize, padEnd, truncateToWidth, visibleWidth } from "./text.ts";
@@ -103,6 +103,35 @@ function meter(cells: number, on: number, onColor: Rgb, offColor: Rgb, onGlyph =
 	return fg(onColor, onGlyph.repeat(filled)) + fg(offColor, offGlyph.repeat(Math.max(0, cells - filled)));
 }
 
+// The 8-cell spectrum gauge for session context: emerald green through fire red.
+export const CONTEXT_SPECTRUM_CELLS = 8;
+export const CONTEXT_SPECTRUM_COLORS: readonly Rgb[] = [
+	[74, 222, 128], // 1: #4ADE80 Verde Esmeralda (0-12%)
+	[132, 204, 22], // 2: #84CC16 Verde Lima (13-25%)
+	[163, 230, 53], // 3: #A3E635 Lima Brillante (26-37%)
+	[234, 179, 8],  // 4: #EAB308 Amarillo Cálido (38-50%)
+	[245, 158, 11], // 5: #F59E0B Ámbar / Oro (51-62%)
+	[249, 115, 22], // 6: #F97316 Naranja Alerta (63-75%)
+	[239, 68, 68],  // 7: #EF4444 Rojo Alerta (76-87%)
+	[220, 38, 38],  // 8: #DC2626 Rojo Fuego Máximo (88-100%+)
+] as const;
+export const CONTEXT_EMPTY_COLOR: Rgb = [70, 85, 100];
+
+function spectrumColorAt(fraction: number): Rgb {
+	const clamped = Math.max(0, Math.min(1, fraction));
+	const pos = clamped * (CONTEXT_SPECTRUM_COLORS.length - 1);
+	const i0 = Math.floor(pos);
+	const i1 = Math.min(CONTEXT_SPECTRUM_COLORS.length - 1, i0 + 1);
+	const t = pos - i0;
+	const c0 = CONTEXT_SPECTRUM_COLORS[i0];
+	const c1 = CONTEXT_SPECTRUM_COLORS[i1];
+	return [
+		Math.round(c0[0] + (c1[0] - c0[0]) * t),
+		Math.round(c0[1] + (c1[1] - c0[1]) * t),
+		Math.round(c0[2] + (c1[2] - c0[2]) * t),
+	];
+}
+
 // The meter wears the session teal and warns as the context fills up.
 export function contextColor(percent: number): Rgb {
 	if (percent >= 85) return palette.red;
@@ -110,13 +139,16 @@ export function contextColor(percent: number): Rgb {
 	return palette.teal;
 }
 
+// The spectrum gauge percentage wears the color corresponding to the percent.
+export function contextGaugeColor(percent: number): Rgb {
+	return spectrumColorAt(Math.max(0, Math.min(100, percent)) / 100);
+}
+
 // The session section is design session-section/02 (Grouped): three groups
 // named by a muted label and a faint stub (where, usage, connections), one
 // muted key column so every value starts at the same place, and only the meter
 // readout and the cost flush right.
 
-/** Where the context meter puts its marks: the percents at which its color turns. */
-const CONTEXT_MARKS = [60, 85];
 /** Session keys (`project`, `context`, …) take this many columns. */
 const KEY_CELLS = 9;
 /** The meter readout (`5% · 53.5k/1M`) keeps at least this many columns, so the bar does not move with every token. */
@@ -134,32 +166,49 @@ const sessionKey = (label: string) => muted(label.padEnd(KEY_CELLS));
 const groupLabel = (label: string): Row => ({ text: muted(label) + fg(palette.faint, " ──") });
 
 /**
- * The context meter: one cell per column; filled cells a heavy `━` in `color`,
- * empty ones a thin faint `─`, with a faint `┼` on the cells holding 60% and 85%.
+ * The spectrum context meter: filled cells ▰ with continuous spectrum gradient,
+ * empty ones ▱ in faint slate border. Lengthens to fill the rail space.
  */
-function contextMeter(percent: number, cells: number, color: Rgb): string {
-	let filled = 0;
-	let empty = "";
-	for (let index = 0; index < cells; index++) {
-		if (((index + 0.5) / cells) * 100 <= percent) filled++;
-		else empty += CONTEXT_MARKS.some((mark) => Math.floor((mark / 100) * cells) === index) ? "┼" : "─";
+export function contextMeter(percent: number, cells: number): string {
+	const clamped = Math.max(0, Math.min(100, percent));
+	const filled = clamped > 0 ? Math.max(1, Math.min(cells, Math.round((clamped / 100) * cells))) : 0;
+	let out = "";
+	for (let i = 0; i < cells; i++) {
+		if (i < filled) {
+			const frac = cells > 1 ? (i + 0.5) / cells : 0;
+			out += fg(spectrumColorAt(frac), "▰");
+		} else {
+			out += fg(CONTEXT_EMPTY_COLOR, "▱");
+		}
 	}
-	return fg(color, "━".repeat(filled)) + fg(palette.faint, empty);
+	return out;
 }
 
-/** The context row: the meter, then `5% · 53.5k/1M` (`5% used` without token counts) flush right, or under the bar when the bar would be too short. */
+/** The context row: the elongated spectrum meter with readout (percent and tokens) flush right. */
 function contextRows(session: SessionInfo, width: number): Row[] {
 	const percent = Math.max(0, Math.min(100, session.contextPercent ?? 0));
 	const rounded = Math.round(percent);
-	const color = contextColor(rounded);
+	const color = contextGaugeColor(rounded);
 	const used = session.tokensUsed;
 	const tokens = used !== undefined && session.tokensMax ? muted(" · ") + plainText(`${formatTokens(used)}/${formatTokens(session.tokensMax)}`) : muted(" used");
 	const readout = bold(fg(color, `${rounded}%`)) + tokens;
 	const readoutWidth = visibleWidth(readout);
 	const cells = width - KEY_CELLS - 1 - Math.max(READOUT_CELLS, readoutWidth);
-	if (cells >= MIN_METER_CELLS) return [{ text: sessionKey("context") + padEnd(contextMeter(percent, cells, color), width - KEY_CELLS - readoutWidth) + readout }];
-	return [{ text: sessionKey("context") + contextMeter(percent, Math.max(0, width - KEY_CELLS), color) }, { text: " ".repeat(Math.max(0, width - readoutWidth)) + readout }];
+	if (cells >= MIN_METER_CELLS) return [{ text: sessionKey("context") + padEnd(contextMeter(percent, cells), width - KEY_CELLS - readoutWidth) + readout }];
+	return [{ text: sessionKey("context") + contextMeter(percent, Math.max(0, width - KEY_CELLS)) }, { text: " ".repeat(Math.max(0, width - readoutWidth)) + readout }];
 }
+
+/** In / out token counter row (▲ 717k in · ▼ 6.0k out). */
+function tokenFlowRow(session: SessionInfo, width: number): Row[] {
+	const inTok = session.inputTokens;
+	const outTok = session.outputTokens;
+	if (inTok === undefined && outTok === undefined) return [];
+	const inStr = inTok !== undefined ? bold(fg(palette.teal, `▲ ${formatTokens(inTok)}`)) + muted(" in") : "";
+	const outStr = outTok !== undefined ? bold(fg(palette.lilac, `▼ ${formatTokens(outTok)}`)) + muted(" out") : "";
+	const sep = inStr && outStr ? muted(" · ") : "";
+	return [{ text: ellipsize(sessionKey("tokens") + inStr + sep + outStr, width) }];
+}
+
 
 /** Session cost, or tokens and the ≈ estimate (S37); the review state lives in the RDD section (S50). */
 function costText(footer: FooterInfo): string {
@@ -168,10 +217,21 @@ function costText(footer: FooterInfo): string {
 	return usage ? usage.map((part, index) => (index % 2 ? muted(part) : plainText(part))).join("") : plainText(`$${dollars.toFixed(3)}`);
 }
 
+/** The cost formatted for the profile row flush right: real cost, or estimated cost from tokens. */
+function profileCostText(footer: FooterInfo): string {
+	const dollars = Number.isFinite(footer.cost) && footer.cost > 0
+		? footer.cost
+		: (Number.isFinite(footer.estimate) && footer.estimate! > 0 ? footer.estimate! : (Number.isFinite(footer.cost) ? footer.cost : 0));
+	return plainText(`$${dollars.toFixed(3)}`);
+}
+
 /** The profile with the cost flush right; without a profile the cost keeps a row of its own. */
 function profileRows(session: SessionInfo, width: number, footer?: FooterInfo): Row[] {
+	if (session.profile) {
+		const cost = footer ? profileCostText(footer) : "";
+		return [{ text: spread(sessionKey("profile") + plainText(session.profile), cost, width) }];
+	}
 	const cost = footer ? costText(footer) : "";
-	if (session.profile) return [{ text: spread(sessionKey("profile") + plainText(session.profile), cost, width) }];
 	return footer ? [{ text: ellipsize(sessionKey("cost") + cost, width) }] : [];
 }
 
@@ -224,26 +284,75 @@ function mcpSummaryRow(hidden: ConnectionState[], width: number): Row {
  * not fit; the saved count drops before anything else. Past `mcpCap` servers
  * the last mcp row sums up the ones left out (S5); /dock passes no cap.
  */
-function connectionRows(session: SessionInfo, width: number, mcpCap = MCP_ROWS): Row[] {
-	const items: { key: string; name: string; state: ConnectionState; tail?: string }[] = [];
+function connectionRows(session: SessionInfo, width: number, mcpCap = MCP_ROWS, mcpGrouped = false, mcpExpanded = false): Row[] {
+	const items: { key: string; name: string; state: ConnectionState; tail?: string; glyphOverride?: string }[] = [];
 	const memory = session.memory;
 	if (memory) {
 		const state: ConnectionState = Object.hasOwn(CONNECTION, memory.state) ? memory.state : "missing";
 		items.push({ key: "memory", name: "engram", state, ...(state === "connected" && memory.saved !== undefined ? { tail: muted(` · ${memory.saved} saved`) } : {}) });
 	}
-	const { shown, hidden } = cappedServers(session.mcp ?? [], mcpCap);
-	shown.forEach((server, index) => {
-		items.push({ key: index === 0 ? "mcp" : "", name: server.name, state: mcpState(server) });
-	});
+	const pamc = session.pamc;
+	if (pamc) {
+		const state: ConnectionState = Object.hasOwn(CONNECTION, pamc.state) ? pamc.state : "missing";
+		const name = pamc.current ? ellipsize(pamc.current, 10) : "shell-pamc";
+		items.push({ key: "pamc", name, state, tail: muted(" · ↗") });
+	}
+	let hidden: ConnectionState[] = [];
+	const isGrouped = mcpGrouped && session.mcp && session.mcp.length > MCP_ROWS;
+	if (isGrouped) {
+		const total = session.mcp.length;
+		const connected = session.mcp.filter((s) => mcpState(s) === "connected").length;
+		const connecting = session.mcp.filter((s) => mcpState(s) === "connecting").length;
+		const failed = session.mcp.filter((s) => mcpState(s) === "failed").length;
+		const state: ConnectionState = failed > 0 ? "failed" : connecting > 0 ? "connecting" : "connected";
+		const glyph = mcpExpanded ? "▴" : "▾";
+		const name = `${total} server${total === 1 ? "" : "s"}`;
+		let tail: string | undefined;
+		if (failed > 0 && connected > 0) {
+			tail = muted(` · ${failed} failed`);
+		} else if (connecting > 0 && connected > 0) {
+			tail = muted(` · ${connecting} connecting`);
+		}
+		items.push({
+			key: "mcp",
+			name,
+			state,
+			tail,
+			glyphOverride: glyph,
+		});
+		if (mcpExpanded) {
+			session.mcp.forEach((server) => {
+				items.push({ key: "", name: server.name, state: mcpState(server) });
+			});
+		}
+	} else {
+		const capped = cappedServers(session.mcp ?? [], mcpCap);
+		hidden = capped.hidden;
+		capped.shown.forEach((server, index) => {
+			items.push({ key: index === 0 ? "mcp" : "", name: server.name, state: mcpState(server) });
+		});
+	}
 	const nameWidth = Math.min(CONNECTION_NAME_CAP, Math.max(0, ...items.map((item) => visibleWidth(item.name))));
 	const wordWidth = Math.max(0, ...items.map((item) => CONNECTION[item.state].word.length));
 	const gap = KEY_CELLS + 2 + nameWidth + 2 + wordWidth <= width ? "  " : " ";
 	const rows = items.map((item): Row => {
 		const look = CONNECTION[item.state];
 		const off = item.state === "missing";
+		const glyph = item.glyphOverride ?? look.glyph;
 		const name = fg(off ? palette.muted : palette.text, ellipsize(item.name, nameWidth));
-		const lead = `${sessionKey(item.key)}${fg(look.color, look.glyph)} ${padEnd(name, nameWidth)}${gap}${fg(off ? palette.muted : look.color, look.word)}`;
+		const lead = `${sessionKey(item.key)}${fg(look.color, glyph)} ${padEnd(name, nameWidth)}${gap}${fg(off ? palette.muted : look.color, look.word)}`;
 		const whole = item.tail ? lead + item.tail : lead;
+		if (item.key === "pamc" && item.tail) {
+			if (visibleWidth(whole) <= width) return { text: whole };
+			const tightLead = `${sessionKey(item.key)}${fg(look.color, glyph)} ${padEnd(name, nameWidth)} ${fg(off ? palette.muted : look.color, look.word)}`;
+			const tightWhole = tightLead + item.tail;
+			if (visibleWidth(tightWhole) <= width) return { text: tightWhole };
+			const prefix = `${sessionKey(item.key)}${fg(look.color, glyph)} `;
+			const avail = Math.max(2, width - (KEY_CELLS + 2) - 1 - visibleWidth(look.word) - visibleWidth(item.tail));
+			const fitted = fg(palette.text, ellipsize(item.name, Math.min(nameWidth, avail)));
+			const custom = `${prefix}${padEnd(fitted, visibleWidth(fitted))} ${fg(look.color, look.word)}${item.tail}`;
+			return { text: ellipsize(custom, width) };
+		}
 		return { text: ellipsize(visibleWidth(whole) <= width ? whole : lead, width) };
 	});
 	if (hidden.length > 0) rows.push(mcpSummaryRow(hidden, width));
@@ -257,14 +366,23 @@ function connectionRows(session: SessionInfo, width: number, mcpCap = MCP_ROWS):
  * one group alone never has one: a label tells groups apart. `mcpCap`: the
  * mcp rows at most (S5).
  */
-function sessionSection(session: SessionInfo, width: number, unpushed = false, footer?: FooterInfo, labels = true, mcpCap = MCP_ROWS): Section {
+function sessionSection(
+	session: SessionInfo,
+	width: number,
+	unpushed = false,
+	footer?: FooterInfo,
+	labels = true,
+	mcpCap = MCP_ROWS,
+	mcpGrouped = false,
+	mcpExpanded = false,
+): Section {
 	const ahead = session.ahead && !unpushed ? ` ↑${session.ahead}` : "";
 	const branch = session.branch ? `  ${fg(palette.green, session.branch + ahead)}` : "";
 	const where: Row = { text: ellipsize(sessionKey("project") + bold(plainText(session.project)) + branch, width) };
 	const groups: [string, Row[]][] = [
 		["where", [where]],
-		["usage", [...(session.contextPercent !== undefined ? contextRows(session, width) : []), ...profileRows(session, width, footer)]],
-		["connections", connectionRows(session, width, mcpCap)],
+		["usage", [...(session.contextPercent !== undefined ? contextRows(session, width) : []), ...tokenFlowRow(session, width), ...profileRows(session, width, footer)]],
+		["connections", connectionRows(session, width, mcpCap, mcpGrouped, mcpExpanded)],
 	];
 	const shown = groups.filter(([, rows]) => rows.length > 0);
 	const named = labels && shown.length > 1;
@@ -383,6 +501,21 @@ function todoSection(todo: TodoInfo, width: number, expanded = false, spinner?: 
 	return { title: "todo", color, right, rows };
 }
 
+export const ODD_PHASE_LABELS_ES: Record<string, string> = {
+	authorizing: "autorizando",
+	exploring: "explorando",
+	researching: "investigando",
+	deciding: "decidiendo",
+	planning: "planificando",
+	implementing: "implementando",
+	checking: "verificando",
+	closing: "cerrando",
+};
+
+export function displayPhase(phase: string): string {
+	return ODD_PHASE_LABELS_ES[phase] ?? phase;
+}
+
 /**
  * Always drawn (S52): a ready row before the first request, the timeline while
  * it runs, one summary row once it settled (`expanded`, /dock: the timeline).
@@ -409,14 +542,15 @@ function oddSection(odd: OddInfo | undefined, width: number, spacers = true, exp
 	shown.forEach((step) => {
 		if (spacers && rows.length > 0) rows.push({ text: fg(palette.faint, "│") });
 		const time = formatTime(step.seconds);
+		const phaseText = displayPhase(step.phase);
 		if (step.state === "active") {
 			const orb = bold(fg(glyphColor(orbOf(step.phase)?.color ?? palette.pink, palette.amber, step.entrance), orbAt(step.phase, step.frame)));
 			// The entrance (S54) first, then the label's own shine (S49).
-			const label = entering([{ text: step.phase, color: palette.muted }], palette.amber, step.entrance, shimmerText(step.phase, step.scan));
+			const label = entering([{ text: phaseText, color: palette.muted }], palette.amber, step.entrance, shimmerText(phaseText, step.scan));
 			const text = item(orb, (rest) => spread(label, plainText(time), rest), width, column);
 			rows.push({ text, highlight: true });
 		} else {
-			rows.push({ text: item(fg(palette.green, "✓"), (rest) => spread(muted(step.phase), muted(time), rest), width, column) });
+			rows.push({ text: item(fg(palette.green, "✓"), (rest) => spread(muted(phaseText), muted(time), rest), width, column) });
 		}
 		// What the step did (S60): a muted line under its label; `doneDetails` false keeps only the active one.
 		const detail = step.detail;
@@ -617,6 +751,43 @@ function agentsSection(agents: AgentInfo[], width: number, spinner?: number, cap
 	return { title: "agents", color: palette.lilac, rows: [...rows, ...moreRow(agents.length - cap, width)] };
 }
 
+function defaultAgentsSection(model: PanelModel, width: number): Section {
+	const prof = model.session.profile ?? "";
+	const isClaude = prof.includes("CLAUDE");
+	const isGpt = prof.includes("GPT");
+
+	const activeStep = model.odd?.steps.find((s) => s.state === "active");
+	const phase = activeStep?.phase;
+
+	let agentName = "gentle-ai";
+	let modelId = isClaude ? "anthropic/claude-sonnet-5-5" : isGpt ? "openai-codex/gpt-6.1-sol" : "oh-my-cpa/gemini-3.8-flash-high";
+	let effort: string | undefined = "medium";
+
+	if (phase === "exploring") {
+		agentName = "gentle-ai-explore";
+		modelId = isClaude ? "anthropic/claude-haiku-5-5" : isGpt ? "openai-codex/gpt-6-luna" : "oh-my-cpa/gemini-3.5-flash-lite";
+		effort = "low";
+	} else if (phase === "implementing") {
+		agentName = "gentle-ai-worker";
+		modelId = isClaude ? "anthropic/claude-sonnet-5-5" : isGpt ? "openai-codex/gpt-6.1-sol" : "oh-my-cpa/gemini-3.8-flash-high";
+		effort = "high";
+	} else if (phase === "checking") {
+		agentName = "gentle-ai-verify";
+		modelId = isClaude ? "anthropic/claude-sonnet-5-5" : isGpt ? "openai-codex/gpt-6.1-sol" : "oh-my-cpa/gemini-3.8-flash-high";
+		effort = "high";
+	}
+
+	const short = shortAgentModel(modelId);
+	const name = fg(effort && Object.hasOwn(EFFORT_COLOR, effort) ? EFFORT_COLOR[effort] : palette.muted, short);
+	const text = effort ? `${name}${muted(` · ${effort}`)}` : name;
+
+	return {
+		title: `agents · ${fg([255, 255, 255], agentName)}`,
+		color: palette.lilac,
+		rows: [{ text: `${fg(palette.green, "✓")} ${text}` }],
+	};
+}
+
 // ASCII `-` for deleted: U+2212 is ambiguous-width. `●` matches the mcp dots, `→` the branch `↑`.
 const CHANGE_KIND: Record<ChangeInfo["status"], { glyph: string; color: Rgb; word?: string }> = {
 	M: { glyph: "●", color: palette.amber },
@@ -698,8 +869,8 @@ function drawSection(section: Section, width: number): string[] {
 	return [topBorder(section, width), ...body, fg(frame, `╰${"─".repeat(Math.max(0, width - 2))}╯`)];
 }
 
-function logoLines(width: number): string[] {
-	const lines = renderLogo(width);
+function logoLines(width: number, logoTick?: number): string[] {
+	const lines = renderLogo(width, logoTick);
 	const widest = Math.max(0, ...lines.map(visibleWidth));
 	// Centered over the section frames, at most two columns in.
 	const indent = " ".repeat(Math.max(0, Math.min(2, Math.floor((width - widest) / 2))));
@@ -715,6 +886,12 @@ export interface PanelOptions {
 	oddExpanded?: boolean;
 	/** Rows available on screen (S34, S38, S50, S52, S64, S77): the session's group labels, then the odd and rdd spacer rows and the muted CI lines, then changes, then an all-passed CI, then a CI that runs, waits or failed, then rdd with all but the latest odd step drop until the panel fits. No limit when absent. */
 	maxRows?: number;
+	/** Display all MCP servers without summary row (S5 override). */
+	mcpExpanded?: boolean;
+	/** Group MCP servers with a dropdown arrow button (▾/▴) into a single collapsible row. */
+	mcpGrouped?: boolean;
+	/** Animation tick for the top wordmark (subtle neural glow sweep). */
+	logoTick?: number;
 }
 
 interface Shape {
@@ -759,16 +936,25 @@ export function renderPanel(model: PanelModel, width: number, options: PanelOpti
 	const ciUrgent = ciLive(model.ci) || (model.ci?.checks.some((check) => check.state === "failed") ?? false);
 	const draw = (shape: Shape) => {
 		const sections = [
-			sessionSection(model.session, inner, unpushed, model.footer, shape.sessionLabels, options.listsExpanded ? Infinity : MCP_ROWS),
+			sessionSection(
+				model.session,
+				inner,
+				unpushed,
+				model.footer,
+				shape.sessionLabels,
+				(options.mcpExpanded || options.listsExpanded) ? Infinity : MCP_ROWS,
+				options.mcpGrouped,
+				options.mcpExpanded,
+			),
 			model.headsUp && headsUpSection(model.headsUp, inner),
 			oddSection(model.odd, inner, shape.spacers, options.oddExpanded, !shape.rdd, shape.oddDetails),
 			shape.rdd ? rddSection(model.rdd, model.footer?.rdd, inner, shape.spacers, model.spinner, shape.rddDetails) : undefined,
 			(ciUrgent ? shape.ci : shape.settledCi) ? ciSection(model.ci, inner, shape.ciDetails, model.spinner) : undefined,
-			model.agents && agentsSection(model.agents, inner, model.spinner, options.listsExpanded ? Infinity : LIST_CAP),
+			(model.agents && agentsSection(model.agents, inner, model.spinner, options.listsExpanded ? Infinity : LIST_CAP)) || (model.session.profile ? defaultAgentsSection(model, inner) : undefined),
 			(model.todo && todoSection(model.todo, inner, options.todoExpanded, model.spinner)) || emptyTodoSection(inner),
 			shape.changes ? model.changes && changesSection(model.changes, inner, options.listsExpanded ? Infinity : LIST_CAP) : undefined,
 		].filter((section): section is Section => section !== undefined);
-		return [...logoLines(columns), ...sections.flatMap((section) => drawSection(section, columns))];
+		return [...logoLines(columns, options.logoTick), ...sections.flatMap((section) => drawSection(section, columns))];
 	};
 	const limit = options.maxRows !== undefined && Number.isFinite(options.maxRows) ? Math.max(0, Math.floor(options.maxRows)) : Infinity;
 	let lines: string[] = [];
@@ -846,14 +1032,14 @@ export interface DockView {
  * while the panel is taller than the screen, how to scroll. Every row is
  * exactly `width` columns and there are always `height` rows.
  */
-export function renderDock(model: PanelModel, width: number, height: number, offset = 0): DockView {
+export function renderDock(model: PanelModel, width: number, height: number, offset = 0, logoTick?: number): DockView {
 	const columns = Math.max(0, Math.floor(width));
 	const rows = Math.max(0, Math.floor(height));
 	if (columns === 0 || rows === 0) return { lines: [], offset: 0 };
 	const inner = Math.max(0, Math.min(DOCK_MAX_WIDTH, columns - 2));
 	const left = " ".repeat(Math.floor((columns - inner) / 2));
 	const right = " ".repeat(columns - inner - left.length);
-	const panel = inner > 0 ? renderPanel(model, inner, { todoExpanded: true, listsExpanded: true, oddExpanded: true }) : [];
+	const panel = inner > 0 ? renderPanel(model, inner, { todoExpanded: true, listsExpanded: true, oddExpanded: true, logoTick }) : [];
 	const body = panel.map((line) => left + padEnd(truncateToWidth(line, inner), inner) + right);
 	// The top margin gives way first on a screen too short for it and two rows.
 	const topRows = Math.min(DOCK_TOP_ROWS, Math.max(0, rows - 3));

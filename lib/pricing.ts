@@ -68,9 +68,41 @@ function rates(value: unknown): PriceRates | undefined {
 
 const priced = (value: PriceRates | undefined) => value !== undefined && value.input + value.output + value.cacheRead + value.cacheWrite > 0;
 
-/** Prices from Pi's registry: the message's own provider when priced, else the same id under anthropic. */
-export function registryPrices(registry: ModelFinder | undefined): PriceLookup {
-	const find = (provider: string, model: string) => {
+/** Normalizes a model identifier by stripping proxy/channel/vendor prefixes. */
+export function cleanModelKey(model: string): string {
+	return model
+		.replace(/^(vc\d+\/|antigravity\/|google\/|anthropic\/|openai\/|oh-my-cpa\/)/i, "")
+		.trim();
+}
+
+/** Default price catalog for known models (matching Shell-PAMC & standard API list prices). */
+export const DEFAULT_MODEL_PRICES: Record<string, PriceRates> = {
+	"gemini-3.8-flash-high": { input: 0.825, output: 4.125, cacheRead: 0.0825, cacheWrite: 0.0416666666666667 },
+	"gemini-3-flash": { input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0.0833333333333333 },
+	"gemini-3.1-flash-image": { input: 0.5, output: 3, cacheRead: 0.5, cacheWrite: 0.5 },
+	"gemini-3.1-flash-lite": { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0.0833333333333333 },
+	"gemini-3.5-flash-lite": { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.0833333333333333 },
+	"gemini-3.5-flash": { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0.0833333333333333 },
+	"gemini-3.6-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.0416666666666667 },
+	"gemini-3.7-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.0416666666666667 },
+	"gemini-4-argon": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0.1875 },
+	"claude-opus-4-6-thinking": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+	"claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+	"gpt-oss-120b-medium": { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0.15 },
+	"gpt-6.1-sol": { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 2.5 },
+	"gpt-6-astra": { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0.15 },
+	"gpt-6-luna": { input: 2, output: 8, cacheRead: 1, cacheWrite: 2 },
+	"gpt-4o": { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 2.5 },
+	"gpt-4o-mini": { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0.15 },
+};
+
+/** Prices from dynamic source, Pi's registry, or fallback catalog. */
+export function registryPrices(
+	registry: ModelFinder | undefined,
+	dynamicPrices?: Record<string, PriceRates>,
+	fallbackCatalog?: Record<string, PriceRates>,
+): PriceLookup {
+	const findInRegistry = (provider: string, model: string) => {
 		try {
 			return rates(registry?.find(provider, model)?.cost);
 		} catch {
@@ -78,10 +110,25 @@ export function registryPrices(registry: ModelFinder | undefined): PriceLookup {
 		}
 	};
 	return (provider, model) => {
-		const own = provider ? find(provider, model) : undefined;
+		const clean = cleanModelKey(model);
+		// 1. Dynamic prices (from Shell-PAMC live sync)
+		if (dynamicPrices) {
+			const dyn = dynamicPrices[model] ?? dynamicPrices[clean];
+			if (priced(dyn)) return dyn;
+		}
+		// 2. Pi's ModelRegistry
+		const own = provider ? findInRegistry(provider, model) : undefined;
 		if (priced(own)) return own;
-		const native = provider === NATIVE_PROVIDER ? undefined : find(NATIVE_PROVIDER, model);
-		return priced(native) ? native : undefined;
+		const native = provider === NATIVE_PROVIDER ? undefined : findInRegistry(NATIVE_PROVIDER, model);
+		if (priced(native)) return native;
+		const cleanNative = clean !== model ? findInRegistry(NATIVE_PROVIDER, clean) : undefined;
+		if (priced(cleanNative)) return cleanNative;
+		// 3. Fallback catalog (Shell-PAMC / standard catalog)
+		if (fallbackCatalog) {
+			const fallback = fallbackCatalog[model] ?? fallbackCatalog[clean];
+			if (priced(fallback)) return fallback;
+		}
+		return undefined;
 	};
 }
 

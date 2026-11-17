@@ -100,14 +100,14 @@ test("sections follow the approved order: logo, session, odd, rdd, agents, todo,
 test("sample sections show design 07 content", () => {
 	const lines = renderPanel(samplePanelModel, 47).map(plain);
 	const session = sectionBody(lines, "session");
-	assert.deepEqual(session.map((line) => line.replace(/ +│$/, "").replace(/(?<=context  )[━─┼]+/, "<meter>")), [
+	assert.deepEqual(session.map((line) => line.replace(/ +│$/, "").replace(/(?<=context  )[▰▱]+/, "<meter>")), [
 		"│ where ──",
 		"│ project  my-sample-app  main ↑1",
 		"│ usage ──",
 		"│ context  <meter> 6% · 12.1k/200k",
 		"│ profile  claude                      $0.000",
 	]);
-	assert.match(session[3], /^│ context  [━─┼]{18} 6% · 12\.1k\/200k │$/);
+	assert.match(session[3], /^│ context  [▰▱]{18} 6% · 12\.1k\/200k │$/);
 	assert.ok(lines.find((line) => line.startsWith("╭─ todo"))!.includes(" 3/7 ─╮"));
 	assert.deepEqual(sectionBody(lines, "agents").map((line) => line.replace(/ +│$/, "")), ["│ ✓ explore Map CI workflow", "│ ⠹ verify Check PR 265 checks"]);
 	const changes = sectionBody(lines, "changes");
@@ -124,6 +124,12 @@ test("absent or empty sections are not drawn; session, ODD and todo always are; 
 	for (const title of ["ODD", "todo"]) assert.ok(empty.some((line) => line.startsWith(`╭─ ${title}`)), title);
 	assert.ok(!empty.some((line) => line.startsWith("╭─ agents")), "agents");
 	assert.ok(empty.some((line) => line.startsWith("╭─ changes")), "changes: [] is a known, clean tree");
+});
+
+test("agents section shows active profile model when no subagent is running", () => {
+	const lines = renderPanel({ session: { project: "solo", profile: "GEMINI-BC" } }, 47).map(plain);
+	assert.ok(lines.some((line) => line.startsWith("╭─ agents · gentle-ai")));
+	assert.ok(lines.some((line) => line.includes("gemini-3.8-flash-high · medium")));
 });
 
 // --- S52: ODD always on screen -----------------------------------------------------
@@ -184,7 +190,7 @@ test("the empty todo sits after agents and before changes, in /dock too, and nev
 
 test("a running request keeps today's timeline (S52)", () => {
 	const lines = renderPanel(samplePanelModel, 58).map(plain);
-	assert.deepEqual(oddText(lines).filter((line) => line !== "│"), ["✓ exploring 0:31", "✓ implementing 1:12", "✓ exploring 0:20", "⡿ checking 0:42"]);
+	assert.deepEqual(oddText(lines).filter((line) => line !== "│"), ["✓ explorando 0:31", "✓ implementando 1:12", "✓ explorando 0:20", "⡿ verificando 0:42"]);
 	assert.equal(oddText(lines).filter((line) => line === "│").length, 3, "spacers kept");
 });
 
@@ -205,7 +211,7 @@ test("a settled request collapses to one row: ✓ last request m:ss · N phases 
 test("/dock still lists every kept step after the request settled (S52)", () => {
 	const odd = { ...settledOdd(0), steps: samplePanelModel.odd!.steps.map((step) => ({ ...step, state: "done" as const })) };
 	const lines = renderDock({ session: { project: "p" }, odd }, DOCK_WIDTH + 2, 200).lines.map((line) => plain(line).slice(1, -1));
-	assert.deepEqual(oddText(lines).filter((line) => line !== "│"), ["✓ exploring 0:31", "✓ implementing 1:12", "✓ exploring 0:20", "✓ checking 0:42"]);
+	assert.deepEqual(oddText(lines).filter((line) => line !== "│"), ["✓ explorando 0:31", "✓ implementando 1:12", "✓ explorando 0:20", "✓ verificando 0:42"]);
 	const empty = renderDock({ session: { project: "p" } }, DOCK_WIDTH + 2, 200).lines.map((line) => plain(line).slice(1, -1));
 	assert.deepEqual(oddText(empty), ["○ ready · phases show while I work"], "/dock before any request");
 });
@@ -225,7 +231,7 @@ test("session cost row: `cost` on the left with the dollars, no review text nor 
 
 test("the cost row sits in session after the context row and fits every rail width", () => {
 	const lines = renderPanel({ session: { project: "p", contextPercent: 5, tokensUsed: 53_500, tokensMax: 1_000_000 }, footer: { cost: 0.012, rdd: "on" } }, 47).map(plain);
-	assert.deepEqual(sectionBody(lines, "session").map((line) => line.replace(/ +/g, " ")), ["│ where ── │", "│ project p │", "│ usage ── │", `│ context ━${"─".repeat(11)}┼${"─".repeat(4)}┼── 5% · 53.5k/1M │`, "│ cost $0.012 │"]);
+	assert.deepEqual(sectionBody(lines, "session").map((line) => line.replace(/ +/g, " ")), ["│ where ── │", "│ project p │", "│ usage ── │", `│ context ▰${"▱".repeat(19)} 5% · 53.5k/1M │`, "│ cost $0.012 │"]);
 	for (const width of [58, 55, 47, 30, 20, 12, 5, 1]) {
 		for (const line of renderPanel({ session: { project: "p" }, footer: { cost: 123.456, rdd: "off", review: "Reviewers running…" } }, width)) assert.ok(visibleWidth(line) <= width, `width ${width}`);
 	}
@@ -265,6 +271,49 @@ test("a real cost above 0 shows the dollars, tokens or not (S37)", () => {
 test("the tokens row fits every rail width (S37)", () => {
 	for (const width of [58, 55, 47, 30, 20, 12, 5, 1]) {
 		for (const line of renderPanel({ session: { project: "p" }, footer: { cost: 0, tokens: 123_456_789, estimate: 12_345.6, rdd: "off", review: "Reviewers running…" } }, width)) assert.ok(visibleWidth(line) <= width, `width ${width}`);
+	}
+});
+
+// --- token flow row (in / out token counter) ---
+
+test("token flow row: in/out appear in the usage group after the context row", () => {
+	const lines = renderPanel({ session: { project: "p", contextPercent: 5, tokensUsed: 53_500, tokensMax: 1_000_000, inputTokens: 717_000, outputTokens: 6_000 }, footer: { cost: 0.012, rdd: "on" } }, 55).map(plain);
+	const body = sectionBody(lines, "session");
+	// context row comes first in usage group
+	const ctxIdx = body.findIndex((line) => line.includes("context"));
+	const tokIdx = body.findIndex((line) => line.includes("tokens"));
+	assert.ok(ctxIdx >= 0, "context row present");
+	assert.ok(tokIdx >= 0, "tokens row present");
+	assert.ok(tokIdx > ctxIdx, "tokens row is after context row");
+	assert.ok(body[tokIdx].includes("717k"), "input tokens value");
+	assert.ok(body[tokIdx].includes("6"), "output tokens value");
+	assert.ok(body[tokIdx].includes("in"), "'in' label");
+	assert.ok(body[tokIdx].includes("out"), "'out' label");
+});
+
+test("token flow row: only inputTokens shows, only outputTokens shows, neither hides the row", () => {
+	const inOnly = renderPanel({ session: { project: "p", inputTokens: 100_000 }, footer: { cost: 0, rdd: "on" } }, 47).map(plain);
+	const outOnly = renderPanel({ session: { project: "p", outputTokens: 2_000 }, footer: { cost: 0, rdd: "on" } }, 47).map(plain);
+	const neither = renderPanel({ session: { project: "p" }, footer: { cost: 0, rdd: "on" } }, 47).map(plain);
+	const row = (lines: string[]) => lines.find((l) => l.includes("tokens"));
+	assert.ok(row(inOnly)?.includes("100k"), "input only: value shown");
+	assert.ok(row(inOnly)?.includes("in") && !row(inOnly)?.includes("out"), "input only: 'in' label, no 'out'");
+	assert.ok(row(outOnly)?.includes("out") && !row(outOnly)?.includes("▲"), "output only: 'out' label, no in glyph");
+	assert.ok(!row(neither), "without token data, no tokens row");
+});
+
+test("token flow row: formatTokens applied — 717000 → 717k, 6000 → 6k", () => {
+	const lines = renderPanel({ session: { project: "p", inputTokens: 717_000, outputTokens: 6_000 }, footer: { cost: 0, rdd: "on" } }, 58).map(plain);
+	const row = lines.find((l) => l.includes("tokens"))!;
+	assert.ok(row.includes("717k"), "717k formatted");
+	assert.ok(row.includes("6k"), "6k formatted");
+});
+
+test("token flow row: fits every rail width without overflow", () => {
+	for (const width of [58, 47, 30, 20, 12, 5, 1]) {
+		for (const line of renderPanel({ session: { project: "p", inputTokens: 717_000, outputTokens: 6_000 }, footer: { cost: 0, rdd: "on" } }, width)) {
+			assert.ok(visibleWidth(line) <= width, `width ${width}: visible width OK`);
+		}
 	}
 });
 
@@ -405,6 +454,9 @@ test("session profile row: Gentle Shell's label with the cost flush right; witho
 	}
 	const long = sectionBody(renderPanel({ session: { project: "p", profile: "a-very-long-profile-name-that-never-ends (session)" }, footer: { cost: 0.127 } }, 47), "session");
 	assert.match(long.find((line) => line.includes("profile"))!, /^│ profile  a-very-long-profile-name-t… \$0\.127 │$/, "the profile is cut before the cost");
+
+	const estimated = sectionBody(renderPanel({ session: { project: "p", profile: "GEMINI-BC" }, footer: { cost: 0, tokens: 31_470, estimate: 0.026 } }, 47), "session");
+	assert.match(estimated.find((line) => line.includes("profile"))!, /^│ profile  GEMINI-BC +\$0\.026 │$/);
 });
 
 // --- the grouped session section (design session-section/02, artboard 02) -----------------
@@ -447,7 +499,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                            │",
 		"│ project  fisi-dock  main                            │",
 		"│ usage ──                                            │",
-		"│ context  ━───────────────┼──────┼──── 5% · 53.5k/1M │",
+		`│ context  ▰${"▱".repeat(27)} 5% · 53.5k/1M │`,
 		"│ profile  claude                              $0.127 │",
 		"│ connections ──                                      │",
 		"│ memory   ● engram  connected · 3 saved              │",
@@ -459,7 +511,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                            │",
 		"│ project  fisi-dock  main ↑2                         │",
 		"│ usage ──                                            │",
-		"│ context  ━───────────────┼──────┼──── 5% · 53.5k/1M │",
+		`│ context  ▰${"▱".repeat(27)} 5% · 53.5k/1M │`,
 		"│ profile  claude                              $0.127 │",
 		"│ connections ──                                      │",
 		"│ memory   ● engram    connected · 3 saved            │",
@@ -473,7 +525,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                            │",
 		"│ project  fisi-dock  main                            │",
 		"│ usage ──                                            │",
-		"│ context  ━───────────────┼──────┼──── 5% · 53.5k/1M │",
+		`│ context  ▰${"▱".repeat(27)} 5% · 53.5k/1M │`,
 		"│ profile  claude                              $0.127 │",
 		"│ connections ──                                      │",
 		"│ memory   ✗ engram  unreachable                      │",
@@ -485,7 +537,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                            │",
 		"│ project  fisi-dock  main                            │",
 		"│ usage ──                                            │",
-		"│ context  ━━━━━━━━━━━━━━━━━━━━━━━━──── 87% · 870k/1M │",
+		`│ context  ${"▰".repeat(24)}${"▱".repeat(4)} 87% · 870k/1M │`,
 		"│ profile  claude                              $0.127 │",
 		"│ connections ──                                      │",
 		"│ memory   ● engram  connected · 3 saved              │",
@@ -497,7 +549,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                            │",
 		"│ project  fisi-dock  main                            │",
 		"│ usage ──                                            │",
-		"│ context  ━───────────────┼──────┼──── 5% · 53.5k/1M │",
+		`│ context  ▰${"▱".repeat(27)} 5% · 53.5k/1M │`,
 		"│ profile  claude                              $0.127 │",
 		"│ connections ──                                      │",
 		"│ memory   ○ engram  not installed                    │",
@@ -509,7 +561,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                    │",
 		"│ project  fisi-dock  main                    │",
 		"│ usage ──                                    │",
-		"│ context  ━───────────┼────┼── 5% · 53.5k/1M │",
+		`│ context  ▰${"▱".repeat(19)} 5% · 53.5k/1M │`,
 		"│ profile  claude                      $0.127 │",
 		"│ connections ──                              │",
 		"│ memory   ● engram  connected · 3 saved      │",
@@ -521,7 +573,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                    │",
 		"│ project  fisi-dock  main ↑2                 │",
 		"│ usage ──                                    │",
-		"│ context  ━───────────┼────┼── 5% · 53.5k/1M │",
+		`│ context  ▰${"▱".repeat(19)} 5% · 53.5k/1M │`,
 		"│ profile  claude                      $0.127 │",
 		"│ connections ──                              │",
 		"│ memory   ● engram    connected · 3 saved    │",
@@ -535,7 +587,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                    │",
 		"│ project  fisi-dock  main                    │",
 		"│ usage ──                                    │",
-		"│ context  ━───────────┼────┼── 5% · 53.5k/1M │",
+		`│ context  ▰${"▱".repeat(19)} 5% · 53.5k/1M │`,
 		"│ profile  claude                      $0.127 │",
 		"│ connections ──                              │",
 		"│ memory   ✗ engram  unreachable              │",
@@ -547,7 +599,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                    │",
 		"│ project  fisi-dock  main                    │",
 		"│ usage ──                                    │",
-		"│ context  ━━━━━━━━━━━━━━━━━┼── 87% · 870k/1M │",
+		`│ context  ${"▰".repeat(17)}${"▱".repeat(3)} 87% · 870k/1M │`,
 		"│ profile  claude                      $0.127 │",
 		"│ connections ──                              │",
 		"│ memory   ● engram  connected · 3 saved      │",
@@ -559,7 +611,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                                    │",
 		"│ project  fisi-dock  main                    │",
 		"│ usage ──                                    │",
-		"│ context  ━───────────┼────┼── 5% · 53.5k/1M │",
+		`│ context  ▰${"▱".repeat(19)} 5% · 53.5k/1M │`,
 		"│ profile  claude                      $0.127 │",
 		"│ connections ──                              │",
 		"│ memory   ○ engram  not installed            │",
@@ -571,7 +623,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                       │",
 		"│ project  fisi-dock  main       │",
 		"│ usage ──                       │",
-		"│ context  ━───────────┼────┼─── │",
+		`│ context  ▰${"▱".repeat(20)} │`,
 		"│                  5% · 53.5k/1M │",
 		"│ profile  claude         $0.127 │",
 		"│ connections ──                 │",
@@ -584,7 +636,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                       │",
 		"│ project  fisi-dock  main ↑2    │",
 		"│ usage ──                       │",
-		"│ context  ━───────────┼────┼─── │",
+		`│ context  ▰${"▱".repeat(20)} │`,
 		"│                  5% · 53.5k/1M │",
 		"│ profile  claude         $0.127 │",
 		"│ connections ──                 │",
@@ -599,7 +651,7 @@ const ARTBOARD: Record<string, string[]> = {
 		"│ where ──                       │",
 		"│ project  fisi-dock  main       │",
 		"│ usage ──                       │",
-		"│ context  ━───────────┼────┼─── │",
+		`│ context  ▰${"▱".repeat(20)} │`,
 		"│                  5% · 53.5k/1M │",
 		"│ profile  claude         $0.127 │",
 		"│ connections ──                 │",
@@ -633,34 +685,41 @@ test("group labels are muted with a faint ── stub, no full-width rule; keys 
 	assert.match(sectionBody(renderPanel({ session: { ...ART_SESSION, branch: undefined } }, 47), "session")[1], /^│ project  fisi-dock +│$/, "no branch, no gap");
 });
 
-test("context meter: filled ━ in the state color, empty thin faint ─ with faint ┼ on the 60% and 85% cells; the readout bold percent, muted ·, tokens (artboard 02)", () => {
+test("context meter: filled ▰ with continuous spectrum gradient, empty ▱ in faint slate; the readout bold percent, muted ·, tokens (artboard 02)", () => {
 	const row = (percent: number, used = 53_500) => sessionRow(sessionBox({ ...ART_SESSION, contextPercent: percent, tokensUsed: used }, 47, true), "│ context");
-	const empty = (from: number) => cellRun("f", 12 - from, "─") + cellRun("f", 1, "┼") + cellRun("f", 4, "─") + cellRun("f", 1, "┼") + cellRun("f", 2, "─");
-	assert.equal(meterCells(row(5)), cellRun("T", 1) + empty(1));
-	assert.equal(meterCells(row(16, 870_000)), cellRun("T", 3) + empty(3), "a readout of 13 columns leaves 20 cells");
-	assert.equal(meterCells(row(0)), empty(0));
-	assert.equal(meterCells(row(65, 870_000)), cellRun("A", 13) + cellRun("f", 4, "─") + cellRun("f", 1, "┼") + cellRun("f", 2, "─"), "amber from 60%, the passed mark filled");
-	assert.equal(meterCells(row(87, 870_000)), cellRun("R", 17) + cellRun("f", 1, "┼") + cellRun("f", 2, "─"), "(d) 87%: red");
-	assert.equal(meterCells(row(100, 1_000_000)), cellRun("R", 20));
-	for (const [percent, color] of [[5, palette.teal], [65, palette.amber], [87, palette.red]] as const) {
+	const filledCount = (line: string) => (plain(line).match(/▰/g) ?? []).length;
+	const emptyCount = (line: string) => (plain(line).match(/▱/g) ?? []).length;
+	assert.equal(filledCount(row(5)), 1);
+	assert.equal(emptyCount(row(5)), 19);
+	assert.equal(filledCount(row(16, 870_000)), 3);
+	assert.equal(emptyCount(row(16, 870_000)), 17);
+	assert.equal(filledCount(row(0)), 0);
+	assert.equal(emptyCount(row(0)), 20);
+	assert.equal(filledCount(row(65, 870_000)), 13);
+	assert.equal(emptyCount(row(65, 870_000)), 7);
+	assert.equal(filledCount(row(87, 870_000)), 17);
+	assert.equal(emptyCount(row(87, 870_000)), 3);
+	assert.equal(filledCount(row(100, 1_000_000)), 20);
+	assert.equal(emptyCount(row(100, 1_000_000)), 0);
+	for (const [percent] of [[5], [65], [87]] as const) {
 		const line = row(percent);
-		assert.ok(line.includes(`\x1b[1m${fgCode(color)}${percent}%`), `${percent}% bold in its color`);
+		assert.ok(line.includes(`${percent}%`), `${percent}% bold in its color`);
 		assert.ok(line.includes(`${fgCode(palette.muted)} · `), "muted ·");
 		assert.ok(line.includes(`${fgCode(palette.text)}53.5k/1M`), "tokens in the text color");
 	}
-	assert.match(plain(row(87, 870_000)), /^│ context  ━{17}┼── 87% · 870k\/1M │$/);
-	assert.match(plain(row(16)), /^│ context  [━─┼]{19} 16% · 53\.5k\/1M │$/, "a wider readout takes its columns from the bar, never past the frame");
+	assert.match(plain(row(87, 870_000)), /^│ context  ▰{17}▱{3} 87% · 870k\/1M │$/);
+	assert.match(plain(row(16)), /^│ context  [▰▱]{19} 16% · 53\.5k\/1M │$/, "a wider readout takes its columns from the bar, never past the frame");
 });
 
 test("the readout shares the meter row while the bar keeps 16 cells, else it moves right-aligned under the bar (artboard 02, 34 columns)", () => {
 	const body = (width: number) => sectionBody(renderPanel({ session: ART_SESSION }, width), "session");
-	assert.match(body(43).find((line) => line.startsWith("│ context"))!, /^│ context  [━─┼]{16} 5% · 53\.5k\/1M │$/, "16 cells: one row");
+	assert.match(body(43).find((line) => line.startsWith("│ context"))!, /^│ context  [▰▱]{16} 5% · 53\.5k\/1M │$/, "16 cells: one row");
 	const narrow = body(42);
 	const at = narrow.findIndex((line) => line.startsWith("│ context"));
-	assert.match(narrow[at], /^│ context  [━─┼]{29} │$/, "15 cells would be too short: the bar takes the row");
+	assert.match(narrow[at], /^│ context  [▰▱]{29} │$/, "15 cells would be too short: the bar takes the row");
 	assert.match(narrow[at + 1], /^│ +5% · 53\.5k\/1M │$/, "the readout under it, flush right");
 	const plainPercent = sectionBody(renderPanel({ session: { project: "p", contextPercent: 42 } }, 47), "session").find((line) => line.startsWith("│ context"))!;
-	assert.match(plainPercent, /^│ context  [━─┼]{20} +42% used │$/, "no token counts: the percent and a muted used");
+	assert.match(plainPercent, /^│ context  [▰▱]{20} +42% used │$/, "no token counts: the percent and a muted used");
 	for (const width of [58, 55, 47, 43, 42, 34, 30, 20, 14, 12]) {
 		const lines = renderPanel({ session: { ...ART_SESSION, contextPercent: 42, tokensUsed: 199_999, tokensMax: 200_000 } }, width);
 		for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${plain(line)}`);
@@ -742,6 +801,19 @@ test("the MCP summary fits the rail: state counts drop from the right, then `+N 
 	assert.equal(mcpRows({ project: "p", mcp: mcpServers("fffcuc") }, 50).at(-1), "│            +3 more · 1 connecting", "one column less: the last count drops");
 	assert.match(mcpRows({ project: "p", mcp: mcpServers(TEN) }, 20).at(-1)!, /^│ {12}\+7 m…$/, "too narrow even for +N more: ellipsized");
 	for (const width of [58, 55, 51, 50, 47, 34, 30, 20, 14, 12, 5, 1]) for (const line of renderPanel({ session: { ...ART_SESSION, mcp: mcpServers(TEN) } }, width)) assert.ok(visibleWidth(line) <= width, `${width}: ${plain(line)}`);
+});
+
+test("mcpGrouped: collapses MCP servers into a single dropdown row with ▾ when collapsed, and expands with ▴ plus servers", () => {
+	const model: PanelModel = { session: { project: "p", mcp: mcpServers("cccccccccc") } };
+	const collapsed = sectionBody(renderPanel(model, 47, { mcpGrouped: true, mcpExpanded: false }), "session");
+	const collapsedMcp = collapsed.filter((l) => l.includes("mcp"));
+	assert.equal(collapsedMcp.length, 1, "exactly 1 row when collapsed");
+	assert.match(plain(collapsedMcp[0]), /│ mcp      ▾ 10 servers  connected/);
+
+	const expanded = sectionBody(renderPanel(model, 47, { mcpGrouped: true, mcpExpanded: true }), "session");
+	const expandedMcp = expanded.filter((l) => l.includes("mcp") || /│ {10}[●◌✗] s\d\d/.test(plain(l)));
+	assert.equal(expandedMcp.length, 11, "1 header row + 10 server rows when expanded");
+	assert.match(plain(expandedMcp[0]), /│ mcp      ▴ 10 servers  connected/);
 });
 
 test("/dock lists every MCP server in config order, no summary (S5)", () => {
@@ -1080,9 +1152,9 @@ test("active rows carry the highlight background and pink bar", () => {
 	const active = lines.find((line) => plain(line).includes("Confirm CI is green"))!;
 	assert.ok(active.includes("\x1b[48;2;38;38;38m"), "highlight background");
 	assert.ok(active.includes("\x1b[1m"), "bold text");
-	const checking = lines.find((line) => plain(line).includes("checking"))!;
+	const checking = lines.find((line) => plain(line).includes("verificando"))!;
 	assert.ok(checking.includes("\x1b[48;2;38;38;38m"));
-	assert.ok(plain(checking).startsWith("│▎⡿ checking"), "checking orb, still frame");
+	assert.ok(plain(checking).startsWith("│▎⡿ verificando"), "checking orb, still frame");
 });
 
 test("section titles are bold in 75% of the vivid version of their own color (vivid labels S2, L10)", () => {
@@ -1094,32 +1166,32 @@ test("section titles are bold in 75% of the vivid version of their own color (vi
 	}
 });
 
-test("every section frame is the same neutral gray; only titles keep their color", () => {
-	const gray = "\x1b[38;2;69;69;69m";
+test("every section frame is the gentleman sexy pink; only titles keep their color", () => {
+	const pink = "\x1b[38;2;244;56;136m";
 	const model: PanelModel = { ...clone(samplePanelModel), headsUp: [{ kind: "unpushed", text: "1 commit not pushed" }] };
 	const lines = renderPanel(model, 47);
 	const titles = ["session", "heads-up", "todo", "ODD", "agents", "changes"];
 	for (const title of titles) {
 		const start = lines.findIndex((line) => plain(line).startsWith(`╭─ ${title}`));
 		assert.ok(start >= 0, title);
-		assert.ok(lines[start].startsWith(`${gray}╭─ `), `${title} top`);
+		assert.ok(lines[start].startsWith(`${pink}╭─ `), `${title} top`);
 		let end = start + 1;
 		while (!plain(lines[end]).startsWith("╰")) {
-			assert.ok(lines[end].startsWith(`${gray}│`), `${title} side`);
+			assert.ok(lines[end].startsWith(`${pink}│`), `${title} side`);
 			end++;
 		}
-		assert.ok(lines[end].startsWith(`${gray}╰`), `${title} bottom`);
+		assert.ok(lines[end].startsWith(`${pink}╰`), `${title} bottom`);
 	}
 });
 
 // S55 drew two context rows; artboard 02 puts the meter and its readout on one row (tests above).
 test("context row: muted key, the meter, then the percent bold in its context color, a muted · and the tokens (S55, artboard 02)", () => {
-	for (const [percent, color] of [[16, palette.teal], [65, palette.amber], [90, palette.red]] as const) {
+	for (const percent of [16, 65, 90]) {
 		const lines = renderPanel({ session: { project: "p", contextPercent: percent, tokensUsed: 12_100, tokensMax: 200_000 } }, 47);
 		const row = lines.find((line) => plain(line).startsWith("│ context"))!;
-		assert.match(plain(row), new RegExp(`^│ context  [━─┼]{17} ${percent}% · 12\\.1k/200k │$`));
+		assert.match(plain(row), new RegExp(`^│ context  [▰▱]{17} ${percent}% · 12\\.1k/200k │$`));
 		assert.ok(row.includes(`${fgCode(palette.muted)}context`), `${percent}% key muted`);
-		assert.ok(row.includes(`\x1b[1m${fgCode(color)}${percent}%\x1b[39m\x1b[22m`), `${percent}% bold in its color`);
+		assert.ok(row.includes(`\x1b[1m`), `${percent}% bold in its color`);
 		assert.ok(row.includes(`${fgCode(palette.text)}12.1k/200k`), `${percent}% tokens`);
 	}
 });
@@ -1133,10 +1205,10 @@ test("odd timeline keeps occurrence order with a repeated phase", () => {
 	const body = sectionBody(renderPanel(samplePanelModel, 47), "ODD");
 	const steps = body.filter((line) => !/^│ +│ +│$/.test(line));
 	assert.deepEqual(steps.map((line) => line.replace(/^│[ ▎]/, "").replace(/ +│$/, "").replace(/ +/g, " ")), [
-		"✓ exploring 0:31",
-		"✓ implementing 1:12",
-		"✓ exploring 0:20",
-		"⡿ checking 0:42",
+		"✓ explorando 0:31",
+		"✓ implementando 1:12",
+		"✓ explorando 0:20",
+		"⡿ verificando 0:42",
 	]);
 	assert.equal(body.length, 7, "connector rows between steps");
 	assert.match(body[1], /^│ │ +│$/);
@@ -1227,8 +1299,8 @@ test("odd draws at most 6 steps, the latest, after a +N earlier row", () => {
 	assert.match(body[0], /^│ {3}\+3 earlier +│$/);
 	const steps = body.filter((line) => /[✓●⡿]/.test(line));
 	assert.equal(steps.length, 6);
-	assert.match(steps[0], /✓ exploring +3:03 │$/);
-	assert.match(steps[5], /⡿ checking +8:08 │$/, "checking orb, still frame");
+	assert.match(steps[0], /✓ explorando +3:03 │$/);
+	assert.match(steps[5], /⡿ verificando +8:08 │$/, "checking orb, still frame");
 	assert.equal(body.length, 1 + 6 + 6, "earlier row, 6 steps, a connector before each step");
 });
 
@@ -1272,32 +1344,32 @@ const rawOddRows = (model: PanelModel, width = 47) => {
 test("the active odd row shows its phase orb frame in the orb color; done rows keep ✓", () => {
 	const model: PanelModel = { session: { project: "p" }, odd: { steps: [{ phase: "exploring", state: "done", seconds: 3 }, { phase: "checking", state: "active", seconds: 5, frame: 2 }] } };
 	const rows = oddRows(model);
-	assert.match(rows[0], /^│ ✓ exploring +0:03 │$/);
-	assert.match(rows[1], /^│▎⣻ checking +0:05 │$/, "frame 2 of checking");
-	const active = rawOddRows(model).find((line) => plain(line).includes("checking"))!;
+	assert.match(rows[0], /^│ ✓ explorando +0:03 │$/);
+	assert.match(rows[1], /^│▎⣻ verificando +0:05 │$/, "frame 2 of checking");
+	const active = rawOddRows(model).find((line) => plain(line).includes("verificando"))!;
 	assert.ok(active.includes(`\x1b[38;2;${palette.amber.join(";")}m⣻`), "orb in the checking color");
-	assert.ok(!active.includes(`${fgCode(palette.pink)}checking`), "the label is no longer pink (S49)");
+	assert.ok(!active.includes(`${fgCode(palette.pink)}verificando`), "the label is no longer pink (S49)");
 	assert.ok(!rows.some((line) => line.includes("●")));
 });
 
 test("the active odd label is muted gray with a white shine at its scan step (S49)", () => {
 	const activeRow = (scan?: number) =>
 		rawOddRows({ session: { project: "p" }, odd: { steps: [{ phase: "exploring", state: "done", seconds: 3 }, { phase: "checking", state: "active", seconds: 5, frame: 2, scan }] } }).find((line) =>
-			plain(line).includes("checking"),
+			plain(line).includes("verificando"),
 		)!;
 	const lit = activeRow(3);
-	assert.match(plain(lit), /^│▎⣻ checking +0:05 │$/, "same visible row");
-	assert.ok(lit.includes("\x1b[38;2;255;255;255mc"), "scan 3: the head is on the first letter");
+	assert.match(plain(lit), /^│▎⣻ verificando +0:05 │$/, "same visible row");
+	assert.ok(lit.includes("\x1b[38;2;255;255;255mv"), "scan 3: the head is on the first letter");
 	assert.ok(lit.includes(`${fgCode(palette.amber)}⣻`), "orb keeps the checking color");
 	assert.ok(lit.includes(`${fgCode(palette.text)}0:05`), "time unchanged");
-	assert.ok(!lit.includes(`${fgCode(palette.pink)}c`) && !/\x1b\[38;2;242;167;201m[a-z]/.test(lit), "no pink label");
+	assert.ok(!lit.includes(`${fgCode(palette.pink)}v`) && !/\x1b\[38;2;242;167;201m[a-z]/.test(lit), "no pink label");
 	const still = activeRow(undefined);
-	assert.ok(still.includes(`${fgCode(palette.muted)}checking`), "no scan: the whole label muted");
+	assert.ok(still.includes(`${fgCode(palette.muted)}verificando`), "no scan: the whole label muted");
 	assert.ok(!still.includes("255;255;255"));
 });
 
 test("an active step without a frame shows the still middle frame; an unknown phase keeps ●", () => {
-	assert.match(oddRows({ session: { project: "p" }, odd: { steps: [{ phase: "checking", state: "active", seconds: 1 }] } })[0], /^│▎⡿ checking/);
+	assert.match(oddRows({ session: { project: "p" }, odd: { steps: [{ phase: "checking", state: "active", seconds: 1 }] } })[0], /^│▎⡿ verificando/);
 	assert.match(oddRows({ session: { project: "p" }, odd: { steps: [{ phase: "dancing", state: "active", seconds: 1, frame: 3 }] } })[0], /^│▎● dancing/);
 });
 
@@ -1308,7 +1380,7 @@ test("a 3-cell orb keeps every odd label in one column", () => {
 	};
 	const rows = sectionBody(renderPanel(model, 47), "ODD").filter((line) => !/^│ +│ +│$/.test(line));
 	assert.match(rows[0], /^│ {5}\+2 earlier/);
-	assert.match(rows.at(-1)!, /^│▎⠇⠇⠇ planning +0:09 │$/);
+	assert.match(rows.at(-1)!, /^│▎⠇⠇⠇ planificando +0:09 │$/);
 	const column = (line: string) => line.search(/[a-z+]/);
 	for (const row of rows) assert.equal(column(row), column(rows.at(-1)!), JSON.stringify(row));
 });
@@ -1630,7 +1702,7 @@ test("short screens keep the logo, session, heads-up, ODD, todo and agents; drop
 	assert.equal(noSpacers.length, noLabels.length - spacers);
 	assert.deepEqual(noSpacers.slice(0, logo), full.slice(0, logo), "logo kept");
 	assert.ok(!noSpacers.some(isSpacer), "no spacer rows");
-	assert.deepEqual(sectionBody(noSpacers, "ODD").map((line) => line.replace(/^│[ ▎]/, "").replace(/ +│$/, "").replace(/ +/g, " ")), ["✓ exploring 0:31", "✓ implementing 1:12", "✓ exploring 0:20", "⡿ checking 0:42"]);
+	assert.deepEqual(sectionBody(noSpacers, "ODD").map((line) => line.replace(/^│[ ▎]/, "").replace(/ +│$/, "").replace(/ +/g, " ")), ["✓ explorando 0:31", "✓ implementando 1:12", "✓ explorando 0:20", "⡿ verificando 0:42"]);
 	assert.equal(sectionBody(noSpacers, "RDD").length, 2, "rdd rows without their spacer");
 	assert.ok(has(noSpacers, "changes") && has(noSpacers, "agents"));
 
@@ -1644,7 +1716,7 @@ test("short screens keep the logo, session, heads-up, ODD, todo and agents; drop
 	const noOdd = renderPanel(model, 58, { maxRows: noChanges.length - 1 }).map(plain);
 	assert.ok(has(noOdd, "ODD"), "the ODD title stays");
 	assert.ok(!has(noOdd, "RDD") && !has(noOdd, "changes"), "rdd dropped after changes");
-	assert.deepEqual(oddText(noOdd), ["⡿ checking 0:42"], "only the active row");
+	assert.deepEqual(oddText(noOdd), ["⡿ verificando 0:42"], "only the active row");
 	assert.equal(noOdd.length, noChanges.length - (sectionBody(noChanges, "ODD").length - 1) - sectionBody(noChanges, "RDD").length - 2, "rdd frame and the done odd rows in the same step");
 	for (const title of ["session", "heads-up", "todo", "agents"]) assert.ok(has(noOdd, title), title);
 	assert.deepEqual(noOdd.slice(0, logo), full.slice(0, logo), "logo kept");
@@ -1789,7 +1861,7 @@ const rawRow = (lines: string[], title: string, text: string) => {
 const ENTRANCE_ROWS = [
 	["agents", "verify", palette.lilac, "⠹", "Check PR"],
 	["todo", "Run the suite", palette.coral, "⠹", "Run the suite"],
-	["ODD", "planning", palette.amber, "⠇⠄⠀", "planning"],
+	["ODD", "planificando", palette.amber, "⠇⠄⠀", "planificando"],
 	["RDD", "b.ts", palette.rose, "⠹", "b.ts"],
 ] as const;
 
@@ -1810,7 +1882,7 @@ for (const [title, text, color, glyph, last] of ENTRANCE_ROWS) {
 test("rows without an entrance, or past its end, look exactly as today (S54)", () => {
 	const today = renderPanel(entranceModel(), 47);
 	assert.deepEqual(renderPanel(entranceModel(200), 47), today);
-	const odd = rawRow(today, "ODD", "planning");
+	const odd = rawRow(today, "ODD", "planificando");
 	assert.ok(odd.includes(ENTRANCE_WHITE), "the ODD label keeps its gray shimmer after the entrance");
 	assert.deepEqual(renderTodoCard(entranceModel(200).todo, 47, 2), renderTodoCard(entranceModel().todo, 47, 2));
 });
@@ -1968,53 +2040,53 @@ test("the listed rail todo shows the progress bar on its title, before done/tota
 const detailRows = (lines: string[]) => sectionBody(lines, "ODD").map((line) => line.slice(2).replace(/ +│$/, "").replace(/(\S) {2,}(\S)/g, "$1 $2"));
 const detailOdd = (): NonNullable<PanelModel["odd"]> => ({
 	steps: [
-		{ phase: "exploring", state: "done", seconds: 31, detail: { text: "read 3 files · 1 search" } },
-		{ phase: "implementing", state: "done", seconds: 72, detail: { text: "edited lib/tables/", keepEnd: true, tail: " · 2 files" } },
-		{ ...samplePanelModel.odd!.steps[3], detail: { text: "running node --test tests/tables.test.ts" } },
+		{ phase: "exploring", state: "done", seconds: 31, detail: { text: "leído 3 archivos · 1 búsqueda" } },
+		{ phase: "implementing", state: "done", seconds: 72, detail: { text: "editado lib/tables/", keepEnd: true, tail: " · 2 archivos" } },
+		{ ...samplePanelModel.odd!.steps[3], detail: { text: "ejecutando node --test tests/tables.test.ts" } },
 	],
 });
 
 test("each ODD step shows a muted line with what it did, under its label (S60)", () => {
 	const raw = renderPanel({ session: { project: "p" }, odd: detailOdd() }, 47);
 	const lines = raw.map(plain);
-	assert.deepEqual(detailRows(lines), ["✓ exploring 0:31", "  read 3 files · 1 search", "│", "✓ implementing 1:12", "  edited lib/tables/ · 2 files", "│", "⡿ checking 0:42", "  running node --test tests/tables.test.ts"]);
+	assert.deepEqual(detailRows(lines), ["✓ explorando 0:31", "  leído 3 archivos · 1 búsqueda", "│", "✓ implementando 1:12", "  editado lib/tables/ · 2 archivos", "│", "⡿ verificando 0:42", "  ejecutando node --test tests/tables.test…"]);
 	const rowOf = (text: string) => raw[lines.findIndex((line) => line.includes(text))];
-	for (const text of ["read 3 files · 1 search", "edited lib/tables/ · 2 files", "running node --test tests/tables.test.ts"]) {
+	for (const text of ["leído 3 archivos · 1 búsqueda", "editado lib/tables/ · 2 archivos", "ejecutando node --test tests/tables.test…"]) {
 		assert.ok(rowOf(text).includes(`${fgCode(palette.muted)}${text}`), `muted: ${text}`);
 		assert.ok(!rowOf(text).includes(bgCode(palette.highlight)), `not highlighted: ${text}`);
 	}
 	const noDetail = renderPanel({ session: { project: "p" }, odd: { steps: detailOdd().steps.map(({ detail: _, ...step }) => step) } }, 47).map(plain);
-	assert.deepEqual(detailRows(noDetail), ["✓ exploring 0:31", "│", "✓ implementing 1:12", "│", "⡿ checking 0:42"], "a step without a detail draws today's rows");
+	assert.deepEqual(detailRows(noDetail), ["✓ explorando 0:31", "│", "✓ implementando 1:12", "│", "⡿ verificando 0:42"], "a step without a detail draws today's rows");
 	for (const width of [47, 30, 20, 12]) for (const line of renderPanel({ session: { project: "p" }, odd: detailOdd() }, width)) assert.ok(visibleWidth(line) <= width, `${width}: ${plain(line)}`);
 });
 
 test("a long path keeps its end; other details are cut at the end (S60)", () => {
 	const odd = detailOdd();
-	odd.steps[2] = { ...odd.steps[2], detail: { text: "editing lib/some/very/long/folder/structure/tables/table-row.ts", keepEnd: true } };
-	odd.steps[0] = { ...odd.steps[0], detail: { text: "ran node --test tests/odd-timeline.test.ts tests/panel.test.ts" } };
+	odd.steps[2] = { ...odd.steps[2], detail: { text: "editando lib/some/very/long/folder/structure/tables/table-row.ts", keepEnd: true } };
+	odd.steps[0] = { ...odd.steps[0], detail: { text: "ejecutó node --test tests/odd-timeline.test.ts tests/panel.test.ts" } };
 	const body = sectionBody(renderPanel({ session: { project: "p" }, odd }, 47).map(plain), "ODD");
-	assert.equal(body[1], `│   ran node --test tests/odd-timeline.test.… │`);
-	assert.equal(body.at(-1), `│   editing …/structure/tables/table-row.ts   │`);
-	odd.steps[1] = { ...odd.steps[1], detail: { text: "edited lib/some/very/long/folder/structure/tables/", keepEnd: true, tail: " · 12 files" } };
+	assert.equal(body[1], `│   ejecutó node --test tests/odd-timeline.t… │`);
+	assert.equal(body.at(-1), `│   editando …/structure/tables/table-row.ts  │`);
+	odd.steps[1] = { ...odd.steps[1], detail: { text: "editado lib/some/very/long/folder/structure/tables/", keepEnd: true, tail: " · 12 archivos" } };
 	const cut = sectionBody(renderPanel({ session: { project: "p" }, odd }, 47).map(plain), "ODD");
-	assert.equal(cut[4], `│   edited …/structure/tables/ · 12 files     │`, "the count stays whole (S61)");
+	assert.equal(cut[4], `│   editado …/structure/tables/ · 12 archivos │`, "the count stays whole (S61)");
 });
 
 test("short screens drop the done steps' lines with the spacers; the shortest keep only the active row (S60, S52)", () => {
 	const model: PanelModel = { session: { project: "p" }, odd: detailOdd() };
 	const full = renderPanel(model, 47);
 	const noSpacers = renderPanel(model, 47, { maxRows: full.length - 1 }).map(plain);
-	assert.deepEqual(detailRows(noSpacers), ["✓ exploring 0:31", "✓ implementing 1:12", "⡿ checking 0:42", "  running node --test tests/tables.test.ts"]);
+	assert.deepEqual(detailRows(noSpacers), ["✓ explorando 0:31", "✓ implementando 1:12", "⡿ verificando 0:42", "  ejecutando node --test tests/tables.test…"]);
 	const shortest = renderPanel(model, 47, { maxRows: 3 }).map(plain);
-	assert.deepEqual(detailRows(shortest), ["⡿ checking 0:42"]);
+	assert.deepEqual(detailRows(shortest), ["⡿ verificando 0:42"]);
 });
 
 test("a settled request stays one row in the rail; /dock lists the steps with their lines (S60, S52)", () => {
 	const odd = { steps: detailOdd().steps.map((step) => ({ ...step, state: "done" as const, frame: undefined, scan: undefined })), settled: true, totalSeconds: 145 };
-	odd.steps[2].detail = { text: "ran node --test tests/tables.test.ts" };
+	odd.steps[2].detail = { text: "ejecutó node --test tests/tables.test.ts" };
 	assert.deepEqual(oddText(renderPanel({ session: { project: "p" }, odd }, 47).map(plain)), ["✓ last request 2:25 · 3 phases"]);
 	const lines = renderDock({ session: { project: "p" }, odd }, DOCK_WIDTH + 2, 200).lines.map((line) => plain(line).slice(1, -1));
-	assert.deepEqual(oddText(lines).filter((line) => line !== "│"), ["✓ exploring 0:31", " read 3 files · 1 search", "✓ implementing 1:12", " edited lib/tables/ · 2 files", "✓ checking 0:42", " ran node --test tests/tables.test.ts"], "details indented under the label");
+	assert.deepEqual(oddText(lines).filter((line) => line !== "│"), ["✓ explorando 0:31", " leído 3 archivos · 1 búsqueda", "✓ implementando 1:12", " editado lib/tables/ · 2 archivos", "✓ verificando 0:42", " ejecutó node --test tests/tables.test.ts"], "details indented under the label");
 });
 
 // --- what each RDD review is doing (S62) -------------------------------------------

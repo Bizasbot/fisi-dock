@@ -1826,13 +1826,13 @@ test("S91 after agent_end, the ODD step stays active while a background subagent
 	t.mock.timers.tick(2_000);
 	sim.emit("agent_end");
 	t.mock.timers.tick(3_000);
-	const held = oddPhaseRows(railOf(sim)(47), "exploring");
+	const held = oddPhaseRows(railOf(sim)(47), "explorando");
 	assert.equal(held.length, 1, held.join("\n"));
 	assert.ok(!held[0].startsWith("✓"), `the step is not done while the subagent runs: ${held[0]}`);
 	assert.ok(held[0].endsWith("0:05"), `its time keeps counting: ${held[0]}`);
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "completed", 2));
 	t.mock.timers.tick(4_000);
-	assert.deepEqual(oddPhaseRows(railOf(sim)(47), "exploring"), ["✓ exploring  0:05"], "the subagent completed: the step closes at that time");
+	assert.deepEqual(oddPhaseRows(railOf(sim)(47), "explorando"), ["✓ explorando  0:05"], "the subagent completed: the step closes at that time");
 	sim.emit("session_shutdown");
 });
 
@@ -1846,7 +1846,7 @@ test("S91 agent_end with no subagent running closes the ODD step at once, as bef
 	t.mock.timers.tick(2_000);
 	sim.emit("agent_end");
 	t.mock.timers.tick(3_000);
-	assert.deepEqual(oddPhaseRows(railOf(sim)(47), "exploring"), ["✓ exploring  0:02"]);
+	assert.deepEqual(oddPhaseRows(railOf(sim)(47), "explorando"), ["✓ explorando  0:02"]);
 	sim.emit("session_shutdown");
 });
 
@@ -2737,3 +2737,115 @@ test("T9 without Gentle Shell (no gentle:banner command) the first start leaves 
 	assert.equal(existsSync(path) ? readState(path).themeApplied : undefined, undefined, "the step stays pending");
 	sim.emit("session_shutdown");
 });
+
+test("rail mouse clicks toggle MCP dropdown and open PAMC modal directly and via ScrollView fallback (even with spacer rows)", async (t) => {
+	stateDir(t, true);
+	const home = mkdtempSync(join(tmpdir(), "fisi-dock-rail-click-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const agentDir = join(home, "agent");
+	const pamcDir = join(home, "pamc");
+	mkdirSync(agentDir, { recursive: true });
+	mkdirSync(pamcDir, { recursive: true });
+	writeFileSync(join(pamcDir, "acc1.json"), "{}");
+	writeFileSync(
+		join(agentDir, "mcp.json"),
+		JSON.stringify({
+			mcpServers: {
+				one: {},
+				two: {},
+				three: {},
+				four: {},
+				five: {},
+			},
+		}),
+	);
+
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const previousPamcDir = process.env.PAMC_AUTHS_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	process.env.PAMC_AUTHS_DIR = pamcDir;
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		if (previousPamcDir === undefined) delete process.env.PAMC_AUTHS_DIR;
+		else process.env.PAMC_AUTHS_DIR = previousPamcDir;
+	});
+
+	const sim = simulate("E:/DEV/app", {
+		tools: [
+			{ name: "mcp__one__a" },
+			{ name: "mcp__two__a" },
+			{ name: "mcp__three__a" },
+			{ name: "mcp__four__a" },
+			{ name: "mcp__five__a" },
+		],
+	});
+
+	// Mock a ScrollView inside tui.layoutRoot whose origHandleMouse returns undefined (simulating missing loose hits)
+	const NODE = Symbol.for("pi.layout-node");
+	let renderedWithSpacers: string[] = [];
+	const mockScroll = {
+		scrollTop: 0,
+		getContentWidth: (w: number) => w,
+		scrollBy: () => 0,
+		child: { render: () => renderedWithSpacers },
+		handleMouse: () => undefined as unknown,
+	};
+	(sim.tui as { layoutRoot?: unknown }).layoutRoot = {
+		[NODE]: () => ({
+			type: "hstack",
+			entries: [
+				{ component: {} },
+				{ component: mockScroll },
+			],
+		}),
+	};
+
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rail = sim.parts.get("footer") as {
+		render(width: number): string[];
+		handleMouse(event: unknown): { handled?: boolean; render?: boolean } | undefined;
+	};
+
+	await waitFor(() => rail.render(55).some((line) => plain(line).includes("5 servers")));
+	let lines = rail.render(55).map(plain);
+	// Simulate 2 leading blank spacer lines in ScrollView (header gap + section gap)
+	renderedWithSpacers = ["", "", ...lines];
+
+	// Wait microtask for ScrollView hook to install
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	const mcpRowIdx = lines.findIndex((line) => line.includes("mcp") && line.includes("5 servers"));
+	assert.ok(mcpRowIdx >= 0, "collapsed mcp row rendered");
+
+	// 1. Clicking on ScrollView with +2 spacer offset expands MCP
+	const res1 = mockScroll.handleMouse({ type: "press", button: "left", x: 5, y: mcpRowIdx + 2, width: 55 }) as { handled?: boolean };
+	assert.equal(res1?.handled, true, "ScrollView fallback handled press on mcp row");
+
+	// Immediate follow-up click on release must NOT double-toggle
+	mockScroll.handleMouse({ type: "click", button: "left", x: 5, y: mcpRowIdx + 2, width: 55 });
+
+	lines = rail.render(55).map(plain);
+	assert.ok(lines.some((line) => line.includes("five")), "MCP list expanded after click");
+	assert.ok(lines.some((line) => line.includes("▴ 5 servers")), "MCP glyph flipped to ▴");
+
+	// 2. Direct click event without prior press also toggles back to collapsed (after debounce window or with press)
+	const expandedMcpIdx = lines.findIndex((line) => line.includes("mcp") && line.includes("5 servers"));
+	const res2 = rail.handleMouse({ type: "press", button: "left", x: 5, y: expandedMcpIdx });
+	assert.equal(res2?.handled, true);
+	lines = rail.render(55).map(plain);
+	assert.ok(!lines.some((line) => line.includes("five")), "MCP list collapsed again");
+	assert.ok(lines.some((line) => line.includes("▾ 5 servers")), "MCP glyph flipped back to ▾");
+
+	// 3. Clicking on PAMC row (even via ScrollView fallback) opens the accounts modal overlay
+	renderedWithSpacers = ["", "", ...lines];
+	const pamcRowIdx = lines.findIndex((line) => line.includes("pamc") && line.includes("↗"));
+	assert.ok(pamcRowIdx >= 0, "pamc row rendered with ↗");
+	const res3 = mockScroll.handleMouse({ type: "press", button: "left", x: 10, y: pamcRowIdx + 2, width: 55 }) as { handled?: boolean };
+	assert.equal(res3?.handled, true, "ScrollView fallback handled press on pamc row");
+	assert.equal(sim.customs.length, 1, "accounts modal overlay opened");
+
+	sim.emit("session_shutdown");
+});
+

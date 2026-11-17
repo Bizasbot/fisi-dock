@@ -12,12 +12,28 @@ export interface SessionInfo {
 	contextPercent?: number;
 	tokensUsed?: number;
 	tokensMax?: number;
+	/** Cumulative input tokens for this session (prompt + cache reads); drawn in the usage group. */
+	inputTokens?: number;
+	/** Cumulative output tokens for this session; drawn in the usage group. */
+	outputTokens?: number;
 	/** Gentle Shell's agent-model profile label (S99, lib/profile.ts); no row when absent. */
 	profile?: string;
 	/** Configured MCP servers in config order (S32): one row each; [] is no MCP config (a muted `none configured` row); no row while absent (not read yet). */
 	mcp?: McpServerInfo[];
 	/** Engram, the memory row of the connections group (lib/memory.ts); no row while absent (Pi's tool list unreadable). */
 	memory?: MemoryInfo;
+	/** Shell-PAMC / CLIProxyAPI synced accounts and currently used account (lib/pamc.ts). */
+	pamc?: PamcInfo;
+}
+
+export interface PamcInfo {
+	/** Active / synced accounts count. */
+	active: number;
+	/** Total accounts in pool. */
+	total: number;
+	/** Currently or most recently used account identifier. */
+	current?: string;
+	state: "connected" | "unreachable" | "missing";
 }
 
 export interface MemoryInfo {

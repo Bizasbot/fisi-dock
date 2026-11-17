@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { dockStatePath, readDockEnabled, readDockTheme, readDockThemeApplied, writeDockEnabled } from "../lib/dock-state.ts";
+import { dockStatePath, readDockEnabled, readDockTheme, readDockThemeApplied, readMcpExpanded, writeDockEnabled, writeMcpExpanded } from "../lib/dock-state.ts";
 
 test("S95 the state file lives under Pi's agent dir: PI_CODING_AGENT_DIR, else ~/.pi/agent", () => {
 	assert.equal(dockStatePath({ PI_CODING_AGENT_DIR: join("x", "agent") }, "home"), join("x", "agent", "fisi-dock", "state.json"));
@@ -78,3 +78,15 @@ test("T9 the state file says whether the first-start theme step is done: only `t
 	writeFileSync(path, '{"themeApplied":true}');
 	assert.equal(readDockThemeApplied(path), true);
 });
+
+test("mcpExpanded state: false by default, saved and restored correctly", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "fisi-dock-state-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const path = join(dir, "agent", "fisi-dock", "state.json");
+	assert.equal(readMcpExpanded(path), false, "missing file: false");
+	assert.equal(writeMcpExpanded(path, true), true);
+	assert.equal(readMcpExpanded(path), true, "after write true: true");
+	assert.equal(writeMcpExpanded(path, false), true);
+	assert.equal(readMcpExpanded(path), false, "after write false: false");
+});
+

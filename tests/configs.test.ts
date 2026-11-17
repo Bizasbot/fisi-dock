@@ -345,7 +345,7 @@ test("S6 without Engram the memory row says not installed; with its tools a fail
 const SERVERS = Array.from({ length: 10 }, (_, index) => `server-${index}`);
 const mcpTool = (server: string) => ({ name: `mcp__${server.replace(/-/g, "_")}__ping`, description: "", parameters: {}, exposure: "deferred" });
 
-test("S6 ten MCP servers in Pi's mcp.json: the rail caps them with a summary row, /dock and the narrow top row show all ten", async (t) => {
+test("S6 ten MCP servers in Pi's mcp.json: the rail groups them into a collapsible dropdown row, /dock shows all ten servers", async (t) => {
 	const { cwd } = configHome(t, { "mcp.json": { mcpServers: Object.fromEntries(SERVERS.map((name) => [name, { command: name }])) } });
 	const tools = SERVERS.slice(0, 7).map(mcpTool);
 	let wide = true;
@@ -357,13 +357,9 @@ test("S6 ten MCP servers in Pi's mcp.json: the rail caps them with a summary row
 	};
 	await waitFor(() => connections(surfaces["rail panel"](58)).some((line) => line.startsWith("│ mcp")));
 	assert.deepEqual(connections(surfaces["rail panel"](58)), [
-		"│ memory   ○ engram    not installed",
-		"│ mcp      ◌ server-7  connecting",
-		"│          ◌ server-8  connecting",
-		"│          ◌ server-9  connecting",
-		"│            +7 more · 7 connected",
-	], "problems first, the rest summed up");
-	assert.deepEqual(connections(surfaces["rail panel"](34)).at(-1), "│            +7 more", "the counts drop on the 34-column rail");
+		"│ memory   ○ engram      not installed",
+		"│ mcp      ▾ 10 servers  connecting · 3 connecting",
+	], "grouped into a dropdown row when collapsed");
 
 	const dock = surfaces["/dock"](64).map(plain);
 	for (const name of SERVERS) assert.ok(dock.some((line) => new RegExp(`[●◌✗] ${name} `).test(line)), `/dock lists ${name}`);
@@ -482,9 +478,9 @@ test("S6 every configuration at once (Spanish, no Engram, 10 MCP servers, Vim, c
 	let prompt: PromptOptions = { label: "esperando entrada", hint: "INSERT", button: true };
 	const sim = simulate(cwd, { wide: () => wide, mode: "super-yolo", tools: () => SERVERS.slice(3).map(mcpTool), prompt: () => prompt });
 	const { surfaces, stop } = await start(sim);
-	await waitFor(() => sessionRows(surfaces["rail panel"](47)).some((line) => line.includes("more")));
+	await waitFor(() => sessionRows(surfaces["rail panel"](47)).some((line) => line.includes("mcp")));
 	await waitFor(() => rule(surfaces["prompt box"](50)).includes("SUPER-YOLO"));
-	assert.ok(sessionRows(surfaces["rail panel"](47)).includes("│ memory   ○ engram    not installed"));
+	assert.ok(sessionRows(surfaces["rail panel"](47)).some((line) => /│ memory   ○ engram +not installed/.test(line)));
 	assert.ok(surfaces["loaded box"](100).some((line) => plain(line).includes("ctrl+e lists them")));
 	assert.equal(rule(surfaces["prompt box"](50)), `╭─ ✿ ${"─".repeat(4)} ● SUPER-YOLO  opus-5.5 · high  INSERT ─╮`);
 	for (const next of [{ label: "esperando entrada", hint: "INSERT", button: true }, { label: "trabajando…", scan: true, hint: "NORMAL", button: true }]) {

@@ -127,15 +127,15 @@ export function oddAction(toolName: string, args: unknown, cwd?: string): OddAct
 export function actionDetail(action: OddAction): OddDetail {
 	switch (action.kind) {
 		case "edit":
-			return { text: `editing ${action.target}`, keepEnd: true };
+			return { text: `editando ${action.target}`, keepEnd: true };
 		case "write":
-			return { text: `writing ${action.target}`, keepEnd: true };
+			return { text: `archivando ${action.target}`, keepEnd: true };
 		case "read":
-			return { text: `reading ${action.target}`, keepEnd: true };
+			return { text: `leyendo ${action.target}`, keepEnd: true };
 		case "search":
-			return { text: `searching "${action.target}"` };
+			return { text: `buscando "${action.target}"` };
 		case "run":
-			return { text: `running ${action.target}` };
+			return { text: `ejecutando ${action.target}` };
 		case "agent":
 			return { text: action.target };
 	}
@@ -182,24 +182,24 @@ export function addAction(acts: StepActions | undefined, action: OddAction): Ste
 	return next;
 }
 
-/** `256 files`, or `256+ files` once distinct paths went past the cap. */
-const files = (list: readonly string[], past: boolean | undefined) => `${list.length}${past ? "+" : ""} ${list.length === 1 && !past ? "file" : "files"}`;
+/** `256 archivos`, or `256+ archivos` once distinct paths went past the cap. */
+const files = (list: readonly string[], past: boolean | undefined) => `${list.length}${past ? "+" : ""} ${list.length === 1 && !past ? "archivo" : "archivos"}`;
 const plural = (count: number, word: string, many = `${word}s`) => `${count} ${count === 1 ? word : many}`;
 
 /** A done step's line: edits first, then the last agent, then commands, then reads; undefined without actions. */
 export function stepSummary(acts: StepActions | undefined): OddDetail | undefined {
 	if (!acts) return undefined;
 	const edited = acts.edits.length;
-	if (edited === 1 && !acts.editsPast) return { text: `edited ${acts.edits[0]}`, keepEnd: true };
+	if (edited === 1 && !acts.editsPast) return { text: `editado ${acts.edits[0]}`, keepEnd: true };
 	if (edited > 1) {
 		const count = files(acts.edits, acts.editsPast);
-		return acts.editFolder ? { text: `edited ${acts.editFolder}`, keepEnd: true, tail: ` · ${count}` } : { text: `edited ${count}` };
+		return acts.editFolder ? { text: `editado ${acts.editFolder}`, keepEnd: true, tail: ` · ${count}` } : { text: `editado ${count}` };
 	}
 	if (acts.lastAgent) return { text: acts.lastAgent };
-	if (acts.lastRun) return acts.runs > 1 ? { text: `ran ${acts.lastRun}`, tail: ` · +${acts.runs - 1} more` } : { text: `ran ${acts.lastRun}` };
+	if (acts.lastRun) return acts.runs > 1 ? { text: `ejecutó ${acts.lastRun}`, tail: ` · +${acts.runs - 1} más` } : { text: `ejecutó ${acts.lastRun}` };
 	const read = acts.reads.length;
-	if (read === 1 && !acts.readsPast && acts.searches === 0) return { text: `read ${acts.reads[0]}`, keepEnd: true };
-	const parts = [read > 0 ? `read ${files(acts.reads, acts.readsPast)}` : "", acts.searches > 0 ? plural(acts.searches, "search", "searches") : ""].filter(Boolean);
+	if (read === 1 && !acts.readsPast && acts.searches === 0) return { text: `leído ${acts.reads[0]}`, keepEnd: true };
+	const parts = [read > 0 ? `leído ${files(acts.reads, acts.readsPast)}` : "", acts.searches > 0 ? plural(acts.searches, "búsqueda", "búsquedas") : ""].filter(Boolean);
 	return parts.length > 0 ? { text: parts.join(" · ") } : undefined;
 }
 

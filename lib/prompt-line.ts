@@ -9,6 +9,10 @@ export interface PromptLineModel {
 	mode?: string;
 	modelId?: string;
 	effort?: string;
+	/** Spinner frame index from `spinnerFrameIndex()`; `undefined` when the session is idle (no spinner drawn). */
+	spinner?: number;
+	/** True when there are attachments: a paperclip glyph (`⊕`) is shown on the right rule end. */
+	clip?: boolean;
 }
 
 /** Gentle Shell's status bar names the mode in capitals and leaves NORMAL out (lib/shell-bar.ts); the same here. */

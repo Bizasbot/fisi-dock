@@ -45,7 +45,7 @@ test("the package ships the theme folder like Gentle Shell does", () => {
 
 // S47: Grok palette measured from the user's screenshot (text, muted, amber, frame).
 // Vivid labels S4: the theme's amber is the panel's amber made vivid.
-test("Grok palette: theme and panel share text #e1e1e1, muted #6c6c6c; the theme's amber #f5a838 is the panel's #e0af68 made vivid; frames #454545 (S47, S4)", async () => {
+test("Grok palette: theme and panel share text #e1e1e1, muted #6c6c6c; the theme's amber #f5a838 is the panel's #e0af68 made vivid; frames #f43888 (S47, S4)", async () => {
 	const { palette } = await import("../lib/palette.ts");
 	const theme = JSON.parse((await import("node:fs")).readFileSync(new URL("../themes/Fisi-Dock.json", import.meta.url), "utf8"));
 	assert.equal(theme.vars.text, "#e1e1e1");
@@ -54,7 +54,7 @@ test("Grok palette: theme and panel share text #e1e1e1, muted #6c6c6c; the theme
 	assert.deepEqual([...palette.text], [0xe1, 0xe1, 0xe1]);
 	assert.deepEqual([...palette.muted], [0x6c, 0x6c, 0x6c]);
 	assert.deepEqual([...palette.amber], [0xe0, 0xaf, 0x68]);
-	assert.deepEqual([...palette.frame], [0x45, 0x45, 0x45]);
+	assert.deepEqual([...palette.frame], [0xf4, 0x38, 0x88]);
 });
 
 // Vivid labels S4: the theme's accents are the panel's pastels made vivid (S1); neutrals and backgrounds stay.

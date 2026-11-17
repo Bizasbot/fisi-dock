@@ -2,7 +2,7 @@ import { ciRunning, ciView, type CiRuns } from "./ci.ts";
 import { entranceSteps } from "./entrance.ts";
 import { headsUpWarnings, type PlanInfo } from "./heads-up.ts";
 import { SHIMMER_STEP_MS } from "./orbs.ts";
-import type { AgentInfo, ChangeInfo, McpServerInfo, MemoryInfo, OddInfo, PanelModel, SessionInfo, TodoInfo, TodoTask } from "./panel-model.ts";
+import type { AgentInfo, ChangeInfo, McpServerInfo, MemoryInfo, OddInfo, PamcInfo, PanelModel, SessionInfo, TodoInfo, TodoTask } from "./panel-model.ts";
 import { rddLabel } from "./panel.ts";
 import { rddLive, rddView, type RddRow } from "./rdd.ts";
 
@@ -57,8 +57,24 @@ export function sessionCost(entries: readonly unknown[]): number {
 	return Math.round(total * 1e9) / 1e9;
 }
 
-/** Tokens of the same assistant messages (S37): usage.totalTokens, else its four parts. */
-export function sessionTokens(entries: readonly unknown[]): number {
+/** Cumulative input (prompt + cache reads) and output tokens across all assistant messages in the session. */
+export function sessionInputOutput(entries: readonly unknown[]): { inputTokens: number; outputTokens: number } | undefined {
+	let input = 0;
+	let output = 0;
+	let found = false;
+	for (const entry of Array.isArray(entries) ? entries : []) {
+		const message = record(record(entry)?.message);
+		if (record(entry)?.type !== "message" || message?.role !== "assistant") continue;
+		const usage = record(message.usage);
+		if (!usage) continue;
+		input += (count(usage.input) ?? 0) + (count(usage.cacheRead) ?? 0);
+		output += count(usage.output) ?? 0;
+		found = true;
+	}
+	return found ? { inputTokens: input, outputTokens: output } : undefined;
+}
+
+export function sessionTokens(entries: unknown): number {
 	let total = 0;
 	for (const entry of Array.isArray(entries) ? entries : []) {
 		const message = record(record(entry)?.message);
@@ -68,6 +84,8 @@ export function sessionTokens(entries: readonly unknown[]): number {
 	}
 	return total;
 }
+
+export const calculateSessionTokens = sessionTokens;
 
 // --- todo ------------------------------------------------------------------
 
@@ -254,6 +272,10 @@ export interface LiveParts {
 	branch?: string;
 	ahead?: number;
 	usage?: Pick<SessionInfo, "contextPercent" | "tokensUsed" | "tokensMax">;
+	/** Cumulative input tokens for the session (prompt + cache reads); drawn in the usage group. */
+	inputTokens?: number;
+	/** Cumulative output tokens for the session; drawn in the usage group. */
+	outputTokens?: number;
 	/** Gentle Shell's agent-model profile label (S99), from lib/profile.ts readSessionProfile. */
 	profile?: string;
 	todo?: TodoInfo;
@@ -280,6 +302,8 @@ export interface LiveParts {
 	mcp?: McpServerInfo[];
 	/** Engram from gentle-engram's mem_* tools and calls (lib/memory.ts); undefined while Pi's tool list cannot be read. */
 	memory?: MemoryInfo;
+	/** Shell-PAMC / CLIProxyAPI synced accounts and currently used account (lib/pamc.ts). */
+	pamc?: PamcInfo;
 	/** The running spinner's frame from the wall clock (S31); drawn only while something runs. */
 	spinner?: number;
 }
@@ -397,9 +421,12 @@ function snapshotOf(parts: LiveParts, now: number): PanelModel {
 		...(parts.branch !== undefined ? { branch: parts.branch } : {}),
 		...(parts.ahead !== undefined ? { ahead: parts.ahead } : {}),
 		...parts.usage,
+		...(parts.inputTokens !== undefined ? { inputTokens: parts.inputTokens } : {}),
+		...(parts.outputTokens !== undefined ? { outputTokens: parts.outputTokens } : {}),
 		...(parts.profile ? { profile: parts.profile } : {}),
 		...(parts.mcp ? { mcp: parts.mcp } : {}),
 		...(parts.memory ? { memory: parts.memory } : {}),
+		...(parts.pamc ? { pamc: parts.pamc } : {}),
 	};
 	const todo = parts.todo;
 	const openTodo = todo ? todo.more + (todo.active !== undefined ? 1 : 0) + (todo.next !== undefined ? 1 : 0) : 0;

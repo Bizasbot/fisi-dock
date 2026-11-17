@@ -25,14 +25,36 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
 	value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 
 /**
- * `calls` after one of Pi's tool_execution_end events: a mem_* call that
- * ended with an error marks the memory failed, any other ends it, and a
- * mem_save adds a save. Other tools and malformed events return `calls` itself.
+ * Checks whether an error event represents a known domain or HTTP response
+ * where the Engram server is clearly reachable and responding.
  */
-export function memoryCallEnd(calls: MemoryCalls, event: { toolName?: unknown; isError?: unknown } | undefined): MemoryCalls {
+function isServerReachableError(event: { result?: unknown } | undefined): boolean {
+	const res = record(event?.result);
+	if (!res) return false;
+	const details = record(res.details);
+	if (typeof details?.http_status === "number") return true;
+	const content = Array.isArray(res.content) ? res.content : undefined;
+	const first = record(content?.[0]);
+	const text = typeof first?.text === "string" ? first.text : typeof res.text === "string" ? res.text : "";
+	if (text && /ambiguous project|multiple git repos|expected_project|validation|not found|conflict|already exists|missing required/i.test(text)) {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * `calls` after one of Pi's tool_execution_end events: a mem_* call that
+ * ended with an error marks the memory failed (unless the server responded
+ * with a domain/HTTP error), any other ends it, and a mem_save adds a save.
+ * Other tools and malformed events return `calls` itself.
+ */
+export function memoryCallEnd(calls: MemoryCalls, event: { toolName?: unknown; isError?: unknown; result?: unknown } | undefined): MemoryCalls {
 	const name = record(event)?.toolName;
 	if (typeof name !== "string" || !MEMORY_TOOL.test(name)) return calls;
-	if (event!.isError === true) return calls.failed ? calls : { ...calls, failed: true };
+	if (event!.isError === true) {
+		if (isServerReachableError(event)) return calls;
+		return calls.failed ? calls : { ...calls, failed: true };
+	}
 	if (name !== MEMORY_SAVE_TOOL && !calls.failed) return calls;
 	return { saved: calls.saved + (name === MEMORY_SAVE_TOOL ? 1 : 0), failed: false };
 }

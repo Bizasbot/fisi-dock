@@ -33,6 +33,33 @@ test("the last mem_* call failed: unreachable; a later successful mem_* call mak
 	assert.deepEqual(memoryInfo(ENGRAM, memoryCallEnd(failed, end("mem_save"))), { state: "connected", saved: 2 });
 });
 
+test("an error where the server is clearly reachable (domain validation or ambiguous project) does not mark memory unreachable", () => {
+	const initial = memoryCallEnd(NO_MEMORY_CALLS, end("mem_save"));
+	assert.deepEqual(memoryInfo(ENGRAM, initial), { state: "connected", saved: 1 });
+
+	const ambiguousError = {
+		toolName: "mem_save",
+		isError: true,
+		result: {
+			content: [{ type: "text", text: "ambiguous project: multiple git repos found in cwd" }],
+			details: { error: "ambiguous project: multiple git repos found in cwd" }
+		}
+	};
+	const afterAmbiguous = memoryCallEnd(initial, ambiguousError);
+	assert.deepEqual(memoryInfo(ENGRAM, afterAmbiguous), { state: "connected", saved: 1 }, "memory stays connected on ambiguous project error");
+
+	const httpError = {
+		toolName: "mem_search",
+		isError: true,
+		result: {
+			content: [{ type: "text", text: "Not Found" }],
+			details: { http_status: 404 }
+		}
+	};
+	const afterHttp = memoryCallEnd(initial, httpError);
+	assert.deepEqual(memoryInfo(ENGRAM, afterHttp), { state: "connected", saved: 1 }, "memory stays connected on http domain error");
+});
+
 test("other tools, malformed events and an error flag that is not true leave the calls as they are", () => {
 	const calls = memoryCallEnd(NO_MEMORY_CALLS, end("mem_save"));
 	for (const event of [end("bash", true), end("read"), end("mcp__engram__mem_save", true), undefined, {}, { toolName: 7, isError: true }]) {

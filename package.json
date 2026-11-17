@@ -41,7 +41,7 @@
       "./extensions"
     ],
     "themes": [
-      "./themes"
+      "./themes/Fisi-Dock.json"
     ],
     "image": "https://raw.githubusercontent.com/fisidj/fisi-dock/main/docs/screenshot.png"
   },

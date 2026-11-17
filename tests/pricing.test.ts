@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { estimateSessionCost, messageCost, registryPrices, type PriceLookup, type PriceRates } from "../lib/pricing.ts";
+import { cleanModelKey, DEFAULT_MODEL_PRICES, estimateSessionCost, messageCost, registryPrices, type PriceLookup, type PriceRates } from "../lib/pricing.ts";
 
 // Pi's anthropic catalog price for claude-opus-5-5 (dollars per million tokens).
 const OPUS: PriceRates = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 };
@@ -77,3 +77,40 @@ test("registry prices: the message's own provider when priced, else the same id 
 	assert.equal(registryPrices(undefined)("claude-bridge", "claude-opus-5-5"), undefined);
 	assert.equal(registryPrices({ find: () => { throw new Error("no"); } })("claude-bridge", "claude-opus-5-5"), undefined);
 });
+
+test("cleanModelKey strips provider and proxy prefixes", () => {
+	assert.equal(cleanModelKey("vc003/gemini-3.8-flash-high"), "gemini-3.8-flash-high");
+	assert.equal(cleanModelKey("antigravity/gemini-3-flash"), "gemini-3-flash");
+	assert.equal(cleanModelKey("google/gemini-3.5-flash-lite"), "gemini-3.5-flash-lite");
+	assert.equal(cleanModelKey("gemini-3.8-flash-high"), "gemini-3.8-flash-high");
+});
+
+test("pricing with fallback catalog and pamc models calculates cost for gemini-3.8-flash-high", () => {
+	const prices = registryPrices(undefined, undefined, DEFAULT_MODEL_PRICES);
+	const geminiRate = prices("oh-my-cpa", "gemini-3.8-flash-high");
+	assert.ok(geminiRate !== undefined);
+	assert.equal(geminiRate.input, 0.825);
+	assert.equal(geminiRate.output, 4.125);
+	assert.equal(geminiRate.cacheRead, 0.0825);
+
+	// Also resolves with channel prefix
+	const prefixedRate = prices("oh-my-cpa", "vc003/gemini-3.8-flash-high");
+	assert.deepEqual(prefixedRate, geminiRate);
+
+	// A session with assistant messages from oh-my-cpa gets estimated cost
+	const entries = [
+		{
+			type: "message",
+			message: {
+				role: "assistant",
+				provider: "oh-my-cpa",
+				model: "gemini-3.8-flash-high",
+				usage: { input: 31_406, output: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 31_470 },
+			},
+		},
+	];
+	const cost = estimateSessionCost(entries, prices);
+	assert.ok(cost !== undefined && cost > 0);
+	assert.equal(cost.toFixed(3), "0.026");
+});
+
