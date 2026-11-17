@@ -1,3 +1,4 @@
+import { renderLogo } from "./logo.ts";
 import { bold, fg, palette } from "./palette.ts";
 import { ellipsize, visibleWidth } from "./text.ts";
 
@@ -44,7 +45,7 @@ function readyRow({ project, branch }: WelcomeInfo, width: number): string {
 	return muted("Ready in ") + text(project) + (branch ? muted(" on ") + text(branch) : "") + muted(".");
 }
 
-/** The welcome card for `width` columns, centered; title and ready lines alone when narrow. */
+/** The wordmark and the welcome card for `width` columns, centered; title and ready lines alone when narrow. */
 export function renderWelcomeCard(info: WelcomeInfo, width: number): string[] {
 	const columns = Math.max(0, Math.floor(width));
 	if (columns < 1) return [];
@@ -56,7 +57,13 @@ export function renderWelcomeCard(info: WelcomeInfo, width: number): string[] {
 	const row = (content = "") => `${indent}${frame("│")}  ${content}${" ".repeat(Math.max(0, inner - visibleWidth(content)))}  ${frame("│")}`;
 	const command = ([label, name]: [string, string]) => bold(text(label)) + " ".repeat(inner - label.length - name.length) + text(name);
 	const tip = ellipsize(TIP, columns - indent.length - 1);
+	// The GENTLESHELL wordmark on top (design gentle-shell-completo/05), centered like the card.
+	const logo = renderLogo(columns);
+	const logoWidth = Math.max(0, ...logo.map(visibleWidth));
+	const logoIndent = " ".repeat((columns - logoWidth) >> 1);
 	return [
+		"",
+		...logo.map((line) => logoIndent + line),
 		"",
 		`${indent}${frame(`╭${"─".repeat(cardWidth - 2)}╮`)}`,
 		row(),

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { renderWelcomeCard, shellVersion, WELCOME_CARD_WIDTH } from "../lib/welcome-card.ts";
 import { visibleWidth } from "../lib/text.ts";
+import { LOGO_WIDTH, renderLogo } from "../lib/logo.ts";
 
 const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -55,4 +56,28 @@ test("the shell version comes from Gentle Shell's config for this agent home, bu
 	assert.equal(shellVersion(config("4.6.0"), "C:\\other"), undefined);
 	assert.equal(shellVersion("not json", home), undefined);
 	assert.equal(shellVersion(undefined, home), undefined);
+});
+
+test("the GENTLESHELL wordmark sits above the card, centered like the card (S1)", () => {
+	const info = { version: "4.6.0", project: "my-app", branch: "main" };
+	for (const width of [101, 63, 50, 40, 34]) {
+		const lines = renderWelcomeCard(info, width);
+		const logo = renderLogo(width);
+		assert.ok(logo.length > 0);
+		const first = lines.findIndex((line) => plain(line).trim() !== "");
+		const top = lines.findIndex((line) => plain(line).includes("╭"));
+		assert.ok(first < top, `width ${width}: wordmark before the card`);
+		const indent = " ".repeat((width - Math.max(...logo.map(visibleWidth))) >> 1);
+		assert.deepEqual(lines.slice(first, first + logo.length), logo.map((line) => indent + line), `width ${width}`);
+		assert.equal(plain(lines[first + logo.length]).trim(), "", `width ${width}: a spacer between wordmark and card`);
+	}
+	const wide = renderWelcomeCard(info, 101).map(plain);
+	assert.ok(wide.slice(0, 5).some((line) => /[⠛⣤⣿]/.test(line)));
+	assert.equal(renderLogo(101)[0] !== undefined && visibleWidth(renderLogo(101)[0]), LOGO_WIDTH);
+});
+
+test("narrow screens keep the plain two lines, no wordmark (S1)", () => {
+	const lines = renderWelcomeCard({ version: "4.6.0", project: "app", branch: "main" }, 33).map(plain);
+	assert.equal(lines.length, 2);
+	assert.ok(lines.every((line) => !/[⠀-⣿╭│╰]/.test(line)));
 });
