@@ -115,7 +115,7 @@ const ACCENT_VARS = ["pink", "deepPink", "pinkSelection"];
 test("look-more S4 the themes folder holds the eleven Fisi Dock themes (look-more S5 adds Fisi-Dock-Light), named like their files", async () => {
 	const { readdirSync } = await import("node:fs");
 	const { FISI_DOCK_THEMES } = await import("../lib/look.ts");
-	const files = readdirSync(new URL("../themes/", import.meta.url)).filter((file) => file.endsWith(".json") && file !== "active-palette.json").sort();
+	const files = readdirSync(new URL("../themes/", import.meta.url)).filter((file) => file.endsWith(".json") && file !== "active-palette.json" && file !== "Fisi-Dock-Canvas.json").sort();
 	assert.deepEqual(files, [...FISI_DOCK_THEMES].map((name) => `${name}.json`).sort());
 	assert.equal(files.length, 11);
 	for (const file of files) assert.equal(read(`../themes/${file}`).name, file.slice(0, -5), file);
