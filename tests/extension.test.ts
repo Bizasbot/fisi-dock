@@ -7,11 +7,27 @@ import test, { after, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import fisiDock from "../extensions/fisi-dock.ts";
+import { DEFAULT_SECTIONS } from "../lib/look.ts";
+import { fgCode, palette } from "../lib/palette.ts";
+import { renderPromptLine } from "../lib/prompt-line.ts";
 import { SIDEBAR_CACHE, SIDEBAR_STATE } from "../lib/slot.ts";
 import { visibleWidth } from "../lib/text.ts";
-import { USER_FRAME_HOOK } from "../lib/user-frame.ts";
+import { frameUserLines, USER_FRAME_HOOK } from "../lib/user-frame.ts";
 
 const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+/** The wide rail's first two columns (sidebar-chrome): the divider, a neutral gray `│` or a blank where it fades out, then a blank. */
+const RAIL_PREFIX = /^(?:\x1b\[38;2;(\d+);\1;\1m│\x1b\[39m| ) /;
+/** The panel inside a wide rail line, styles kept: the line less the divider column and the blank after it. */
+function railPanelLine(line: string): string {
+	assert.match(line, RAIL_PREFIX, `the divider column and a blank: ${JSON.stringify(plain(line))}`);
+	return line.replace(RAIL_PREFIX, "");
+}
+
+/** Each row matches its pattern, in order, and there are exactly as many rows. */
+function assertRows(rows: string[], patterns: RegExp[], message?: string): void {
+	assert.equal(rows.length, patterns.length, `${message ?? "rows"}: ${JSON.stringify(rows)}`);
+	rows.forEach((row, index) => assert.match(row, patterns[index], message));
+}
 
 // Spinners move with the wall clock unless motion is potato (S31); the still ⠹
 // keeps these tests independent of the time they run at. The animated tests
@@ -34,6 +50,7 @@ type Factory = (tui: unknown) => { render(width: number): string[]; dispose?(): 
 
 type Exec = (command: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
 type Command = { description?: string; handler(args: string, ctx: unknown): Promise<void> | void };
+type Shortcut = { description?: string; handler(ctx: unknown): Promise<void> | void };
 type Overlay = { render(width: number): string[]; handleInput?(data: string): void; dispose?(): void };
 type Keys = { matches(data: string, id: string): boolean };
 /** One ctx.ui.custom() call: the factory gets (tui, theme, keybindings, done). */
@@ -46,7 +63,7 @@ type Custom = {
 // In-memory Pi, session and terminal with Gentle Shell's rail parts registered.
 function simulate(
 	cwd: string,
-	options: { ownsHost?: () => boolean; exec?: Exec; branch?: () => unknown[]; tools?: () => unknown[]; commands?: () => unknown[]; editor?: unknown; theme?: string; knownThemes?: string[]; throwingThemes?: string[]; failingThemes?: string[] } = {},
+	options: { ownsHost?: () => boolean; exec?: Exec; branch?: () => unknown[]; tools?: () => unknown[]; commands?: () => unknown[]; shortcuts?: boolean; editor?: unknown; theme?: string; knownThemes?: string[]; throwingThemes?: string[]; failingThemes?: string[] } = {},
 ) {
 	const { ownsHost } = options;
 	// Pi's editor factory slot (setEditorComponent / getEditorComponent): Gentle Shell's marked factory when a test seeds one (S88).
@@ -55,8 +72,11 @@ function simulate(
 	const handlers = new Map<string, Handler[]>();
 	const channels = new Map<string, ((data: unknown) => void)[]>();
 	const commands = new Map<string, Command>();
+	const shortcuts = new Map<string, Shortcut>();
 	const pi = {
 		registerCommand: (name: string, command: Command) => commands.set(name, command),
+		// Pi's pi.registerShortcut, recorded by key; `shortcuts: false` leaves it out, like older hosts.
+		...(options.shortcuts === false ? {} : { registerShortcut: (key: string, shortcut: Shortcut) => void shortcuts.set(key, shortcut) }),
 		on: (name: string, handler: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
 		events: {
 			on: (channel: string, handler: (data: unknown) => void) => {
@@ -147,7 +167,7 @@ function simulate(
 	(pi.events as { emit?: (channel: string, data: unknown) => void }).emit = emitEvent;
 	fisiDock(pi as never);
 	const setEditor = (factory: unknown) => void (editorFactory = factory);
-	return { startHeader, parts, gentleHeader, gentleFooter, gentleParts, widgets, placements, commands, customs, notices, themes, selects, picks, ctx, tui, emit, emitEvent, handlers, channels, editorSets, setEditor };
+	return { startHeader, parts, gentleHeader, gentleFooter, gentleParts, widgets, placements, commands, shortcuts, customs, notices, themes, selects, picks, ctx, tui, emit, emitEvent, handlers, channels, editorSets, setEditor };
 }
 
 test("the extension takes over the header and Status slots and restores both on shutdown", () => {
@@ -415,7 +435,9 @@ test("heads-up from fake git output, a fake todo and fixture ODD plans (S14, S8)
 	const sim = simulate(FIXTURE, { exec, branch });
 	sim.emit("session_start");
 	sim.widgets.get("fisi-dock")!(sim.tui);
-	const rail = () => sim.parts.get("footer") as { render(width: number): string[] };
+	const footer = sim.parts.get("footer") as { render(width: number): string[] };
+	// The panel inside the wide rail (sidebar-chrome); the width checks below read the rail as drawn.
+	const rail = () => ({ render: (width: number) => footer.render(width).map(railPanelLine) });
 
 	await waitFor(() => headsUpRows(rail().render(47)).some((line) => line.includes("ODD plan")) && headsUpRows(rail().render(47)).some((line) => line.includes("branches")));
 	const first = headsUpRows(rail().render(47));
@@ -438,7 +460,7 @@ test("heads-up from fake git output, a fake todo and fixture ODD plans (S14, S8)
 	assert.ok(settled.some((line) => line.includes("! 3 todo tasks left")));
 	for (const width of [47, 30, 20]) {
 		const lines = rail().render(width);
-		for (const line of lines) assert.ok(visibleWidth(line) <= width);
+		for (const line of footer.render(width)) assert.ok(visibleWidth(line) <= width);
 		console.log(`--- simulated heads-up after the run settled, ${width} columns\n${headsUpRows(lines).join("\n")}`);
 	}
 	sim.emit("agent_start");
@@ -446,7 +468,8 @@ test("heads-up from fake git output, a fake todo and fixture ODD plans (S14, S8)
 	sim.emit("session_shutdown");
 });
 
-const railOf = (sim: ReturnType<typeof simulate>) => (width: number) => (sim.parts.get("footer") as { render(width: number): string[] }).render(width).map(plain);
+/** The panel the wide rail draws at `width`, plain: two columns narrower, after the divider and a blank (sidebar-chrome). */
+const railOf = (sim: ReturnType<typeof simulate>) => (width: number) => (sim.parts.get("footer") as { render(width: number): string[] }).render(width).map((line) => plain(railPanelLine(line)));
 
 const rddRows = (lines: string[]) => {
 	const start = lines.findIndex((line) => line.startsWith("╭─ RDD"));
@@ -576,7 +599,7 @@ test("review tool calls add a muted line under the review: its step while it run
 	const sim = simulate("E:\\DEV\\app");
 	sim.emit("session_start");
 	sim.widgets.get("fisi-dock")!(sim.tui);
-	const rows = () => rddRows(railOf(sim)(47))!.map((line) => line.replace(/^│▎. /, "").replace(/ \d+:\d\d │$/, "").replace(/ │$/, ""));
+	const rows = () => rddRows(railOf(sim)(47))!.map((line) => line.replace(/^│▎. /, "").replace(/ \d+(?::\d\d)+ │$/, "").replace(/ │$/, ""));
 	const tool = (name: string, event: Record<string, unknown>) => {
 		for (const handler of sim.handlers.get(name) ?? []) handler(event, sim.ctx);
 	};
@@ -606,7 +629,7 @@ test("the panel shows Gentle Shell's background jobs from gentle-ai:jobs-sidebar
 	sim.emitEvent("gentle-ai:jobs-sidebar", { sessionId: "s1", snapshot: { jobs: [{ id: "job-1", label: "npm test", startedAt: 1 }] } });
 	const lines = railOf(sim)(47);
 	assert.ok(!lines.some((line) => line.includes("profile")));
-	assert.ok(lines.some((line) => /^│ ⠹ job-1 npm test +│$/.test(line)));
+	assert.ok(lines.some((line) => /^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/.test(line)), "the job with its time (S35)");
 	sim.emit("session_shutdown");
 });
 
@@ -704,18 +727,19 @@ test("narrow: a todo alone draws only the card; no todo keeps the strip and draw
 });
 
 test("no tasks: the rail draws the muted todo row; the narrow strip draws no todo card and no todo segment (S94, S28, S8)", () => {
-	const row = "│ ○ no tasks · the list shows while I plan    │";
+	// The rail at 47 draws the panel at 45, after the divider and a blank (sidebar-chrome).
+	const row = "│ ○ no tasks · the list shows while I plan  │";
 	let wide = true;
 	const sim = simulate("E:\\DEV\\app", { ownsHost: () => wide });
 	sim.emit("session_start");
 	sim.widgets.get("fisi-dock")!(sim.tui);
 	const strip = sim.widgets.get("fisi-dock-strip")!(sim.tui);
-	const rail = () => (sim.parts.get("footer") as { render(width: number): string[] }).render(47).map(plain);
+	const rail = () => railOf(sim)(47);
 	const todoRows = (lines: string[]) => lines.slice(lines.findIndex((line) => line.startsWith("╭─ todo")) + 1).slice(0, 2);
-	assert.deepEqual(todoRows(rail()), [row, `╰${"─".repeat(45)}╯`], "no todo list at all");
+	assert.deepEqual(todoRows(rail()), [row, `╰${"─".repeat(43)}╯`], "no todo list at all");
 	// Gentle Shell's progress event for a cleared list (lib/shell-todo.ts todoProgress: total 0).
 	sim.emitEvent("gentle-pi:todo:progress", { sessionId: "s1", done: 0, total: 0, current: null });
-	assert.deepEqual(todoRows(rail()), [row, `╰${"─".repeat(45)}╯`], "0 tasks");
+	assert.deepEqual(todoRows(rail()), [row, `╰${"─".repeat(43)}╯`], "0 tasks");
 	wide = false;
 	for (const width of [64, 53]) {
 		const lines = strip.render(width).map(plain);
@@ -814,7 +838,7 @@ test("/dock is registered with a description and opens the live panel as an over
 	const lines = view.render(width).map(plain);
 	assert.equal(lines.length, 36, "the whole phone height (S59)");
 	assert.ok(lines.some((line) => line.startsWith(" ╭─ session")), "the full side panel, not the strip");
-	assert.ok(lines.some((line) => /^ │ ⠹ job-1 npm test +│ $/.test(line)), "live data");
+	assert.ok(lines.some((line) => /^ │ ⠹ job-1 npm test +\d+(?::\d\d)+ │ $/.test(line)), "live data");
 	assert.ok(!lines.some((line) => line.includes("fisi dock")), "no titled frame (S59)");
 	assert.match(lines.at(-1)!, /^ Esc to close/);
 	for (const line of view.render(width)) assert.equal(visibleWidth(line), width, "opaque: every row the full overlay width");
@@ -898,6 +922,191 @@ test("/dock without a live session only says so", async () => {
 	await sim.commands.get("dock")!.handler("", sim.ctx);
 	assert.equal(sim.customs.length, 0);
 	assert.equal(sim.notices.length, 1);
+});
+
+// --- skills-view S1-S4: the skills row and /skills ----------------------------------
+
+/** Pi's pi.getCommands() entries for one skill (SlashCommandInfo). */
+const skillCommand = (name: string, origin: string, scope = "user", description = `${name} does things`) => ({ name: `skill:${name}`, description, source: "skill", sourceInfo: { path: `/s/${name}/SKILL.md`, source: "local", scope, origin } });
+const SKILL_COMMANDS = [
+	{ name: "gentle:banner", source: "extension", sourceInfo: { path: "/e", source: "local", scope: "user", origin: "package" } },
+	skillCommand("gentle-design", "package"),
+	skillCommand("btw", "package"),
+	skillCommand("go-testing", "top-level"),
+	skillCommand("local-skill", "top-level", "project"),
+];
+
+test("the session section ends with the skills Pi loaded, read from getCommands; /skills unfolds the names in the rail and folds them again, repainting each time (skills-view S1, S2, S4)", async () => {
+	const sim = simulate("E:\\DEV\\app", { commands: () => SKILL_COMMANDS });
+	const command = sim.commands.get("skills");
+	assert.ok(command, "/skills registered");
+	assert.match(command.description ?? "", /skills/i);
+	assert.match(command.description ?? "", /side panel/i);
+	assert.match(command.description ?? "", /fold/i);
+	sim.emit("session_start");
+	let renders = 0;
+	sim.widgets.get("fisi-dock")!({ ...sim.tui, requestRender: () => void renders++ });
+	const skillRowsOf = () => sessionRows(railOf(sim)(58)).map((line) => line.replace(/ +│$/, "")).filter((line, index, rows) => index >= rows.findIndex((row) => row.startsWith("│ skills")));
+	assert.deepEqual(skillRowsOf(), ["│ skills   ▸ 4 loaded · 2 package · 1 user · 1 project", "│          ctrl+alt+s or /skills to unfold"], "folded by default");
+
+	const before = renders;
+	await command.handler("", sim.ctx);
+	assert.ok(renders > before, "unfolding repaints");
+	assert.deepEqual(skillRowsOf(), [
+		"│ skills   ▾ 4 loaded · 2 package · 1 user · 1 project",
+		"│          ctrl+alt+s or /skills to fold",
+		"│          package gentle-design, btw",
+		"│          user    go-testing",
+		"│          project local-skill",
+	]);
+	const unfolded = renders;
+	await command.handler("", sim.ctx);
+	assert.ok(renders > unfolded, "folding repaints");
+	assert.deepEqual(skillRowsOf(), ["│ skills   ▸ 4 loaded · 2 package · 1 user · 1 project", "│          ctrl+alt+s or /skills to unfold"], "/skills again folds it");
+	assert.deepEqual(sim.notices, [], "no notice");
+	sim.emit("session_shutdown");
+});
+
+test("the skills row follows Pi's list on the next cheap read (turn end), so /reload and new skills show; no getCommands keeps the session rows as before (skills-view S4, S1)", async () => {
+	let commands: unknown[] = [skillCommand("btw", "package")];
+	const sim = simulate("E:\\DEV\\app", { commands: () => commands });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const row = () => sessionRows(railOf(sim)(58)).find((line) => line.startsWith("│ skills"))?.replace(/ +│$/, "");
+	assert.equal(row(), "│ skills   ▸ 1 loaded · 1 package");
+	commands = [];
+	sim.emit("turn_end");
+	assert.equal(row(), "│ skills   none loaded", "Pi loaded none");
+	commands = [skillCommand("btw", "package"), skillCommand("go-testing", "top-level", "temporary")];
+	sim.emit("model_select");
+	assert.equal(row(), "│ skills   ▸ 2 loaded · 1 package · 1 user", "a temporary skill counts as user");
+	sim.emit("session_shutdown");
+
+	// Pi without getCommands: no skills row; the no-MCP test above pins the other session rows.
+	const bare = simulate("E:\\DEV\\app");
+	bare.emit("session_start");
+	bare.widgets.get("fisi-dock")!(bare.tui);
+	assert.ok(!railOf(bare)(58).some((line) => line.includes("skills")), "no row");
+	await bare.commands.get("skills")!.handler("", bare.ctx);
+	assert.ok(!railOf(bare)(58).some((line) => line.includes("skills")), "/skills with nothing to unfold changes nothing");
+	bare.emit("session_shutdown");
+});
+
+test("/skills with Fisi Dock off or no live session only says so (skills-view S2)", async (t) => {
+	stateDir(t, true);
+	const sim = simulate("E:\\DEV\\app", { commands: () => SKILL_COMMANDS });
+	await sim.commands.get("skills")!.handler("", sim.ctx);
+	assert.deepEqual(sim.notices, ["Fisi Dock: no live session to show yet"]);
+
+	stateDir(t, false);
+	const off = simulate("E:\\DEV\\app", { commands: () => SKILL_COMMANDS });
+	off.emit("session_start");
+	await off.commands.get("skills")!.handler("", off.ctx);
+	assert.deepEqual(off.notices, ["Fisi Dock is off · /fisi-dock on turns it back on"]);
+	off.emit("session_shutdown");
+});
+
+test("ctrl+alt+s unfolds and folds the skills row like /skills, repainting each time (skills-view S6)", async () => {
+	const sim = simulate("E:\DEV\app", { commands: () => SKILL_COMMANDS });
+	const shortcut = sim.shortcuts.get("ctrl+alt+s");
+	assert.ok(shortcut, "ctrl+alt+s registered");
+	assert.match(shortcut.description ?? "", /skills/i);
+	assert.match(sim.commands.get("skills")!.description ?? "", /ctrl\+alt\+s/, "/skills names its shortcut");
+	sim.emit("session_start");
+	let renders = 0;
+	sim.widgets.get("fisi-dock")!({ ...sim.tui, requestRender: () => void renders++ });
+	const skillRowsOf = () => sessionRows(railOf(sim)(58)).map((line) => line.replace(/ +│$/, "")).filter((line, index, rows) => index >= rows.findIndex((row) => row.startsWith("│ skills")));
+	const folded = ["│ skills   ▸ 4 loaded · 2 package · 1 user · 1 project", "│          ctrl+alt+s or /skills to unfold"];
+	assert.deepEqual(skillRowsOf(), folded, "folded by default");
+	const noticesBefore = [...sim.notices];
+
+	const before = renders;
+	await shortcut.handler(sim.ctx);
+	assert.ok(renders > before, "unfolding repaints");
+	assert.deepEqual(skillRowsOf(), [
+		"│ skills   ▾ 4 loaded · 2 package · 1 user · 1 project",
+		"│          ctrl+alt+s or /skills to fold",
+		"│          package gentle-design, btw",
+		"│          user    go-testing",
+		"│          project local-skill",
+	]);
+	const unfolded = renders;
+	await shortcut.handler(sim.ctx);
+	assert.ok(renders > unfolded, "folding repaints");
+	assert.deepEqual(skillRowsOf(), folded, "ctrl+alt+s again folds it");
+	// The command and the shortcut share one toggle.
+	await shortcut.handler(sim.ctx);
+	await sim.commands.get("skills")!.handler("", sim.ctx);
+	assert.deepEqual(skillRowsOf(), folded, "/skills folds what ctrl+alt+s unfolded");
+	assert.deepEqual(sim.notices, noticesBefore, "the toggle adds no notice");
+	sim.emit("session_shutdown");
+});
+
+test("no Fisi Dock shortcut is a Pi built-in key, so Pi reports no shortcut conflict at startup (skills-view S6)", async () => {
+	// Pi warns about any extension key that equals a built-in default key, even one
+	// bound only inside a picker (ctrl+s is app.models.save). Read Pi's own table.
+	const { KEYBINDINGS } = await import(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js", import.meta.url).href) as { KEYBINDINGS: Record<string, { defaultKeys?: string | string[] }> };
+	const builtIn = new Set(Object.values(KEYBINDINGS).flatMap((binding) => [binding.defaultKeys ?? []].flat()));
+	assert.ok(builtIn.has("ctrl+s"), "the table is Pi's: ctrl+s saves the model selection");
+	const sim = simulate("E:\\DEV\\app", { commands: () => SKILL_COMMANDS });
+	assert.deepEqual([...sim.shortcuts.keys()], ["ctrl+alt+s"]);
+	for (const key of sim.shortcuts.keys()) assert.ok(!builtIn.has(key), `${key} is not a Pi built-in key`);
+});
+
+test("ctrl+alt+s with Fisi Dock off or no live session says what /skills says (skills-view S6)", async (t) => {
+	stateDir(t, true);
+	const sim = simulate("E:\DEV\app", { commands: () => SKILL_COMMANDS });
+	await sim.shortcuts.get("ctrl+alt+s")!.handler(sim.ctx);
+	assert.deepEqual(sim.notices, ["Fisi Dock: no live session to show yet"]);
+
+	stateDir(t, false);
+	const off = simulate("E:\DEV\app", { commands: () => SKILL_COMMANDS });
+	off.emit("session_start");
+	await off.shortcuts.get("ctrl+alt+s")!.handler(off.ctx);
+	assert.deepEqual(off.notices, ["Fisi Dock is off · /fisi-dock on turns it back on"]);
+	off.emit("session_shutdown");
+});
+
+test("a Pi without registerShortcut still loads Fisi Dock, and /skills still unfolds the row (skills-view S6)", async () => {
+	const sim = simulate("E:\DEV\app", { commands: () => SKILL_COMMANDS, shortcuts: false });
+	assert.equal(sim.shortcuts.size, 0);
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	await sim.commands.get("skills")!.handler("", sim.ctx);
+	assert.ok(sessionRows(railOf(sim)(58)).some((line) => line.startsWith("│ skills   ▾")), "unfolded");
+	sim.emit("session_shutdown");
+});
+
+test("under the skills row a muted line names how to unfold it, and how to fold it when open, at every width; no shortcut or no skills, no line (skills-view S7)", async () => {
+	const sim = simulate("E:\DEV\app", { commands: () => SKILL_COMMANDS });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rowsAt = (width: number) => {
+		const rows = sessionRows(railOf(sim)(width)).map((line) => line.replace(/ +│$/, ""));
+		const at = rows.findIndex((line) => line.startsWith("│ skills"));
+		return rows.slice(at, at + 2);
+	};
+	assert.deepEqual(rowsAt(58), ["│ skills   ▸ 4 loaded · 2 package · 1 user · 1 project", "│          ctrl+alt+s or /skills to unfold"], "the rail's width");
+	assert.deepEqual(rowsAt(52), ["│ skills   ▸ 4 loaded · 2 package · 1 user", "│          ctrl+alt+s or /skills to unfold"], "narrower: counts drop, the line stays");
+	assert.deepEqual(rowsAt(70), ["│ skills   ▸ 4 loaded · 2 package · 1 user · 1 project", "│          ctrl+alt+s or /skills to unfold"], "wide: still on its own line");
+	assert.equal(rowsAt(30)[1], "│          ctrl+alt+s or …", "too narrow: cut");
+	const raw = (sim.parts.get("footer") as { render(width: number): string[] }).render(58).find((line) => line.includes("to unfold"))!;
+	assert.ok(raw.includes(`${fgCode(palette.muted)}ctrl+alt+s or /skills to unfold`), "the line is muted");
+	await sim.shortcuts.get("ctrl+alt+s")!.handler(sim.ctx);
+	assert.deepEqual(rowsAt(58), ["│ skills   ▾ 4 loaded · 2 package · 1 user · 1 project", "│          ctrl+alt+s or /skills to fold"], "unfolded: how to fold it, above the names");
+	sim.emit("session_shutdown");
+
+	const none = simulate("E:\DEV\app", { commands: () => [] });
+	none.emit("session_start");
+	none.widgets.get("fisi-dock")!(none.tui);
+	assert.ok(!sessionRows(railOf(none)(70)).some((line) => line.includes("to unfold")), "nothing to unfold, no line");
+	none.emit("session_shutdown");
+
+	const old = simulate("E:\DEV\app", { commands: () => SKILL_COMMANDS, shortcuts: false });
+	old.emit("session_start");
+	old.widgets.get("fisi-dock")!(old.tui);
+	assert.ok(!sessionRows(railOf(old)(70)).some((line) => line.includes("to unfold")), "a Pi without registerShortcut gets no line");
+	old.emit("session_shutdown");
 });
 
 test("the fisi-dock marker is set at load and session_start, and cleared on session_shutdown (S24)", () => {
@@ -1017,9 +1226,11 @@ test("running spinners move with the wall clock in the strip and the rail, and s
 	assert.ok(renders > before, "the next frame repaints");
 	assert.notEqual(rail.digest(), digest, "the rail memo key follows the frame");
 	assertJobCard(strip.render(64), "⠙");
-	assert.ok(rail.render(47).some((line) => /^│ ⠙ job-1 npm test +│$/.test(plain(line))), "rail agent row");
+	assert.ok(rail.render(47).some((line) => /^│ ⠙ job-1 npm test +0:00 │$/.test(plain(railPanelLine(line)))), "rail agent row with its time");
 	t.mock.timers.tick(80);
 	assertJobCard(strip.render(64));
+	t.mock.timers.tick(920);
+	assert.ok(rail.render(47).some((line) => /^│ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] job-1 npm test +0:01 │$/.test(plain(railPanelLine(line)))), "the rail's time ticks each second");
 
 	sim.emitEvent("gentle-ai:jobs-sidebar", { sessionId: "s1", snapshot: { jobs: [{ id: "job-1", label: "npm test", startedAt: 1, status: "exited" }] } });
 	const idle = rail.digest();
@@ -1027,7 +1238,7 @@ test("running spinners move with the wall clock in the strip and the rail, and s
 	t.mock.timers.tick(800);
 	assert.equal(renders, before, "nothing runs: no repaints");
 	assert.equal(rail.digest(), idle);
-	assert.ok(rail.render(47).some((line) => /^│ ✓ job-1 npm test +│$/.test(plain(line))));
+	assert.ok(rail.render(47).some((line) => /^│ ✓ job-1 npm test +│$/.test(plain(railPanelLine(line)))));
 	sim.emit("session_shutdown");
 });
 
@@ -1104,22 +1315,27 @@ test("short terminal: the rail panel keeps the logo and agents; the digest follo
 	sim.widgets.get("fisi-dock")!(sim.tui);
 	sim.emitEvent("gentle-ai:jobs-sidebar", JOB);
 	const rail = sim.parts.get("footer") as { render(width: number): string[]; digest(): string };
-	const full = rail.render(58).map(plain);
+	// The panel inside the rail, after the divider and a blank (sidebar-chrome).
+	const panel = () => rail.render(58).map((line) => plain(railPanelLine(line)));
+	const full = panel();
 	assert.ok(!full[0].startsWith("╭"), "no rows known: the logo shows");
 	const tall = rail.digest();
 
 	// The rail sits under the top row: two rows of the screen are not the panel's.
 	terminal.rows = full.length + 2;
-	assert.deepEqual(rail.render(58).map(plain), full, "it fits: unchanged");
+	assert.deepEqual(panel(), full, "it fits: unchanged");
 	terminal.rows = full.length + 1;
-	const label = (line: string) => /^│ (where|usage|connections) ──/.test(line);
-	assert.ok(full.some(label), "the session's group labels");
-	assert.deepEqual(rail.render(58).map(plain), full.filter((line) => !label(line)), "the session's group labels drop first (artboard 02)");
-	terminal.rows = full.filter((line) => !label(line)).length + 1;
-	assert.deepEqual(rail.render(58).map(plain), full.filter((line) => !label(line)), "no odd or changes to drop: logo and agents stay, the rail scrolls");
+	assert.ok(!full.some((line) => /^│ (where|usage|connections) ──/.test(line)), "no session group labels to drop (sidebar-chrome 02)");
+	assert.deepEqual(panel(), full, "no labels, odd or changes to drop: logo and agents stay, the rail scrolls");
 	assert.notEqual(rail.digest(), tall, "the rail memo key follows the rows");
+	// A tall screen: the rail fills its rows so the divider spans them; the panel stays as is.
+	terminal.rows = full.length + 12;
+	const padded = panel();
+	assert.equal(padded.length, full.length + 10, "the rail fills the rows under the top row");
+	assert.deepEqual(padded.slice(0, full.length).map((line) => line.trimEnd()), full.map((line) => line.trimEnd()), "the panel on top, unchanged");
+	assert.deepEqual(padded.slice(full.length).map((line) => line.trim()), Array(10).fill(""), "blank rows under it");
 	terminal.rows = 6;
-	const tiny = rail.render(58).map(plain);
+	const tiny = panel();
 	assert.ok(!tiny[0].startsWith("╭") && tiny.some((line) => line.startsWith("╭─ session")) && tiny.some((line) => line.startsWith("╭─ agents")), "logo, session and agents kept");
 	for (const line of rail.render(58)) assert.ok(visibleWidth(line) <= 58);
 
@@ -1171,7 +1387,7 @@ test("idle refresh: git, heads-up git, plans and MCP state re-read every ~10 s w
 	await waitFor(() => count("worktree") > start.worktree);
 	assert.equal(count("worktree"), start.worktree + 1, "heads-up git re-read once");
 	assert.ok(rail().some((line) => /^│ mcp +● rea/.test(line)));
-	const raw = (sim.parts.get("footer") as { render(width: number): string[] }).render(58).find((line) => plain(line).startsWith("│ mcp"))!;
+	const raw = (sim.parts.get("footer") as { render(width: number): string[] }).render(58).map(railPanelLine).find((line) => plain(line).startsWith("│ mcp"))!;
 	assert.ok(raw.includes(dotBefore([0x8f, 0xc9, 0x8f], "rea")), "MCP state refreshed without any event");
 
 	// A run is active: no idle reads (the run's own triggers refresh).
@@ -1213,15 +1429,12 @@ test("no MCP config: a muted `mcp none configured` row, cost in session and no f
 	await waitFor(() => railOf(sim)(58).some((line) => line.startsWith("│ mcp")));
 	const lines = railOf(sim)(58);
 	assert.deepEqual(sessionRows(lines).map((line) => line.replace(/ +│$/, "")), [
-		"│ where ──",
 		"│ project  app",
-		"│ usage ──",
 		"│ cost     $0.000",
-		"│ connections ──",
 		"│ memory   ○ engram  not installed",
 		"│ mcp      none configured",
 	]);
-	const raw = (sim.parts.get("footer") as { render(width: number): string[] }).render(58).find((line) => plain(line).startsWith("│ mcp"))!;
+	const raw = (sim.parts.get("footer") as { render(width: number): string[] }).render(58).map(railPanelLine).find((line) => plain(line).startsWith("│ mcp"))!;
 	assert.ok(raw.includes("\x1b[38;2;108;108;108mnone configured"), "muted");
 	assert.match(lines.at(-1)!, /^╰─+╯$/, "the panel ends with the last section");
 	assert.ok(!lines.some((line) => /^─+$/.test(line)), "no footer separator");
@@ -1241,7 +1454,7 @@ test("engram memory row from gentle-engram's mem_* tools: not installed, connect
 	sim.emit("session_start");
 	sim.widgets.get("fisi-dock")!(sim.tui);
 	const row = () => sessionRows(railOf(sim)(47)).find((line) => line.startsWith("│ memory"));
-	const raw = () => (sim.parts.get("footer") as { render(width: number): string[] }).render(47).find((line) => plain(line).startsWith("│ memory"))!;
+	const raw = () => (sim.parts.get("footer") as { render(width: number): string[] }).render(47).map(railPanelLine).find((line) => plain(line).startsWith("│ memory"))!;
 	const toolEnd = (toolName: string, isError = false) => {
 		for (const handler of sim.handlers.get("tool_execution_end") ?? []) handler({ type: "tool_execution_end", toolCallId: `c-${toolName}`, toolName, result: { content: [] }, isError }, sim.ctx);
 	};
@@ -1339,7 +1552,7 @@ test("MCP servers from Pi's mcp.json and the project's: one row each, green with
 	sim.widgets.get("fisi-dock")!(sim.tui);
 	const connections = () => {
 		const rows = sessionRows(railOf(sim)(58));
-		return rows.slice(rows.findIndex((line) => line.startsWith("│ connections")) + 1).map((line) => line.replace(/ +│$/, ""));
+		return rows.slice(rows.findIndex((line) => line.startsWith("│ memory"))).map((line) => line.replace(/ +│$/, ""));
 	};
 	await waitFor(() => connections().some((line) => line.startsWith("│ mcp")));
 	assert.deepEqual(connections(), [
@@ -1349,7 +1562,7 @@ test("MCP servers from Pi's mcp.json and the project's: one row each, green with
 		"│          ◌ rea       connecting",
 		"│          ◌ local     connecting",
 	], "an MCP server named engram is not gentle-engram's mem_save tool");
-	const raw = (name: string) => (sim.parts.get("footer") as { render(width: number): string[] }).render(58).find((line) => /^│ (mcp| ) +[●◌✗] /.test(plain(line)) && plain(line).includes(` ${name} `))!;
+	const raw = (name: string) => (sim.parts.get("footer") as { render(width: number): string[] }).render(58).map(railPanelLine).find((line) => /^│ (mcp| ) +[●◌✗] /.test(plain(line)) && plain(line).includes(` ${name} `))!;
 	const glyphBefore = (color: readonly number[], glyph: string, name: string) => `\x1b[38;2;${color.join(";")}m${glyph}\x1b[39m \x1b[38;2;225;225;225m${name}`;
 	assert.ok(raw("engram").includes(glyphBefore([0x8f, 0xc9, 0x8f], "●", "engram")), "engram green");
 	assert.ok(raw("context7").includes(glyphBefore([0x8f, 0xc9, 0x8f], "●", "context7")), "context7 green (namespace)");
@@ -1366,7 +1579,7 @@ test("MCP servers from Pi's mcp.json and the project's: one row each, green with
 	assert.ok(raw("local").includes(glyphBefore([0x8f, 0xc9, 0x8f], "●", "local")), "local green once its tools exist");
 	const all = railOf(sim)(58).join("\n");
 	assert.ok(!all.includes("s3cr3t") && !all.includes("example.invalid") && !/\boff\b/.test(all), "only enabled server names are drawn");
-	for (const width of [58, 55, 47, 30, 20]) for (const line of railOf(sim)(width)) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
+	for (const width of [58, 55, 47, 30, 20]) for (const line of (sim.parts.get("footer") as { render(width: number): string[] }).render(width)) assert.ok(visibleWidth(line) <= width, `${width}: ${plain(line)}`);
 	const shown = railOf(sim)(58);
 	console.log(`--- simulated session section with MCP, 58 columns\n${[shown.find((line) => line.startsWith("╭─ session"))!, ...sessionRows(shown)].join("\n")}`);
 	sim.emit("session_shutdown");
@@ -1462,10 +1675,10 @@ test("claude-bridge replies at cost 0: session row and narrow header show tokens
 	const rows = sessionRows(railOf(sim)(58));
 	// 2 × (0.4 + 4 + 1.14 + 1) = $13.08 at Anthropic's catalog price.
 	const costRow = rows.find((row) => row.startsWith("│ cost"));
-	assert.equal(costRow, `│ cost     12.4M tok · ≈$13${" ".repeat(29)} │`);
+	assert.equal(costRow, `│ cost     12.4M tok · ≈$13${" ".repeat(27)} │`, "the panel at 56 inside the rail at 58");
 	assert.ok(!rows.some((row) => row.includes("$0.000")), "no $0.000 while tokens are known");
 	assert.ok(asked.includes("claude-bridge/claude-opus-5-5") && asked.includes("anthropic/claude-opus-5-5"), "own provider first, then anthropic");
-	for (const width of [58, 47, 30, 20]) for (const line of railOf(sim)(width)) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
+	for (const width of [58, 47, 30, 20]) for (const line of (sim.parts.get("footer") as { render(width: number): string[] }).render(width)) assert.ok(visibleWidth(line) <= width, `${width}: ${plain(line)}`);
 	wide = false;
 	const header = sim.parts.get("header") as { render(width: number): string[] };
 	assert.ok(plain(header.render(64)[0]).includes("  12.4M tok · ≈$13"), plain(header.render(64)[0]));
@@ -1762,22 +1975,22 @@ test("S87 a subagent_run in task mode shows in agents next to the job: its event
 	sim.emitEvent("gentle-ai:jobs-sidebar", JOB);
 	tool("tool_execution_start", { toolName: "subagent_run", toolCallId: "c1", args: { agent: "explore", task: "Map the footer sources", mode: "task" } });
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "queued", 1));
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ job-1 npm test │", "│ ○ explore Map the footer sources │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/, /^│ ○ explore Map the footer sources │$/]);
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "running", 2));
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ job-1 npm test │", "│ ⠹ explore Map the footer sources │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/, /^│ ⠹ explore Map the footer sources +\d+(?::\d\d)+ │$/]);
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "waiting", 3));
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ job-1 npm test │", "│▎! explore Map the footer sources │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/, /^│▎! explore Map the footer sources +\d+(?::\d\d)+ │$/], "a waiting task keeps its time");
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "running", 4));
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "completed", 5));
 	tool("tool_execution_end", { toolName: "subagent_run", toolCallId: "c1", isError: false, result: { content: [], details: { gentleAgents: { taskId: "t1", agent: "explore", status: "completed", mode: "task", cwd: "E:/DEV/app", label: "map footer", turns: 3, toolCalls: 4, lastStep: "done", model: "anthropic/claude-opus-5-5", thinking: "high" } } } });
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ job-1 npm test │", "│ ✓ explore map footer  opus · high │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/, /^│ ✓ explore map footer  opus · high │$/], "a finished task: no time");
 	// Another session's task and a stale sequence change nothing.
 	sim.emitEvent("gentle-pi:notification:source", { ...subagentEvent("t9", "running", 6), sessionId: "s2", parentSessionId: "s2" });
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "running", 5));
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ job-1 npm test │", "│ ✓ explore map footer  opus · high │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/, /^│ ✓ explore map footer  opus · high │$/]);
 	// Finished tasks fold after the same tail as Gentle Shell's finished jobs, on the idle refresh.
 	t.mock.timers.tick(70_000);
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ job-1 npm test │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/]);
 	sim.emit("session_shutdown");
 });
 
@@ -1793,7 +2006,7 @@ test("S87 a background subagent_run: the result names the task first, the events
 	sim.emitEvent("gentle-ai:jobs-sidebar", JOB);
 	tool("tool_execution_start", { toolName: "subagent_run", toolCallId: "c1", args: { agent: "verify", task: "Check PR 265", label: "check PR", mode: "background" } });
 	tool("tool_execution_end", { toolName: "subagent_run", toolCallId: "c1", isError: false, result: { content: [], details: { gentleAgents: { taskId: "t1", agent: "verify", status: "queued", mode: "background", cwd: "E:/DEV/app", label: "check PR", turns: 0, toolCalls: 0, lastStep: "starting", model: "anthropic/claude-sonnet-4-5" } } } });
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ job-1 npm test │", "│ ○ verify check PR  sonnet │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/, /^│ ○ verify check PR  sonnet │$/]);
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "running", 1));
 	t.mock.timers.tick(5_000);
 	const card = strip.render(53).map((line) => plain(line).replace(/ {2,}/g, "  ").replace(/─+/g, "─"));
@@ -1876,9 +2089,92 @@ test("S87 after a reload, unfinished tasks are seeded once from this session pre
 	sim.widgets.get("fisi-dock")!(sim.tui);
 	// The seed is an async disk read: wait for it, not for a fixed time, so a loaded suite does not race it.
 	for (const deadline = Date.now() + 5_000; agentRows(railOf(sim)(47)).length === 0 && Date.now() < deadline;) await settle();
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ writer label t1  opus │", "│ ○ writer label t2  opus │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ writer label t1 +\d+(?::\d\d)+ opus │$/, /^│ ○ writer label t2  opus │$/], "the running seed with its time, the queued one without");
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "completed", 1));
 	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ✓ writer label t1  opus │", "│ ○ writer label t2  opus │"], "events move a seeded task");
+	sim.emit("session_shutdown");
+});
+
+/** Real time spent on I/O while the test's timers are mocked: setImmediate turns, never a mocked timer. */
+const ioPause = async (ms: number) => {
+	for (const end = performance.now() + ms; performance.now() < end;) await new Promise((resolve) => setImmediate(resolve));
+};
+
+/** A fresh GENTLE_PI_AGENT_HOME for the test, and the writer of this session's presence activity file as Gentle Shell writes it (schema 1). */
+function presenceHome(t: TestContext) {
+	const scratch = mkdtempSync(join(tmpdir(), "fisi-dock-presence-"));
+	console.log(`--- presence scratch: ${scratch}`);
+	const saved = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = join(scratch, "agent");
+	t.after(() => {
+		if (saved === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = saved;
+		rmSync(scratch, { recursive: true, force: true });
+	});
+	const presence = join(scratch, "agent", "gentle-agents", "presence");
+	const hash = createHash("sha256").update("s1").digest("hex");
+	return (tasks: { id: string; label: string; model: string }[]) => {
+		mkdirSync(presence, { recursive: true });
+		const entries = tasks.map(({ id, label, model }) => ({ summary: { id, agent: "gentle-ai-worker", label, status: "running", model, createdAt: 1_000, startedAt: 1_500, endedAt: null, lastActivityAt: 2_000 }, thread: { version: 1, dropped: 0, items: [] } }));
+		writeFileSync(join(presence, `${hash}.11111111-1111-4111-8111-111111111111.activity.json`), JSON.stringify({ schema: 1, sessionHash: hash, incarnation: "11111111-1111-4111-8111-111111111111", generation: 1, activity: { tasks: entries } }));
+	};
+}
+
+test("S87 a task-mode subagent_run shows its model while it runs: read from the presence activity file after its status event; the result then wins", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 100_000 });
+	const write = presenceHome(t);
+	const sim = simulate("E:\\DEV\\app");
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const tool = (name: string, event: Record<string, unknown>) => {
+		for (const handler of sim.handlers.get(name) ?? []) handler(event, sim.ctx);
+	};
+	// The session-start seed reads a presence dir that is not there yet.
+	await ioPause(100);
+	tool("tool_execution_start", { toolName: "subagent_run", toolCallId: "w1", args: { agent: "gentle-ai-worker", task: "Say hello", label: "hello", mode: "task" } });
+	write([{ id: "t1", label: "file label", model: "claude-bridge/claude-opus-5-5" }]);
+	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "queued", 1));
+	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "running", 2));
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ gentle-ai-worker hello +\d+(?::\d\d)+ │$/], "no model before the read");
+	t.mock.timers.tick(1_000);
+	for (const end = performance.now() + 5_000; !agentRows(railOf(sim)(47))[0]?.includes("opus") && performance.now() < end;) await ioPause(10);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ gentle-ai-worker hello +\d+(?::\d\d)+ opus │$/], "the model while it runs, the call's label kept");
+	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "completed", 3));
+	tool("tool_execution_end", { toolName: "subagent_run", toolCallId: "w1", isError: false, result: { content: [], details: { gentleAgents: { taskId: "t1", agent: "gentle-ai-worker", status: "completed", mode: "task", cwd: "E:/DEV/app", label: "said hi", turns: 1, toolCalls: 1, lastStep: "done", model: "anthropic/claude-sonnet-4-5", thinking: "high" } } } });
+	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ✓ gentle-ai-worker said hi  sonnet · high │"], "the result's label, model and effort");
+	// A finished task is never changed by the file.
+	t.mock.timers.tick(5_000);
+	await ioPause(100);
+	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ✓ gentle-ai-worker said hi  sonnet · high │"]);
+	sim.emit("session_shutdown");
+});
+
+test("S87 the presence file is read a few times at most for a task whose entry names no model; then the task is left alone", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 100_000 });
+	const write = presenceHome(t);
+	const sim = simulate("E:\\DEV\\app");
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	await ioPause(100);
+	write([{ id: "t1", label: "from the file", model: "" }]);
+	sim.emitEvent("gentle-pi:notification:source", subagentEvent("t1", "running", 1));
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ subagent task t1 +\d+(?::\d\d)+ │$/]);
+	t.mock.timers.tick(1_000);
+	for (const end = performance.now() + 5_000; !agentRows(railOf(sim)(47))[0]?.includes("from the file") && performance.now() < end;) await ioPause(10);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ subagent from the file +\d+(?::\d\d)+ │$/], "the first read gave the label, no model");
+	// The second and third reads, one delay after each.
+	for (let read = 2; read <= 3; read++) {
+		await ioPause(100);
+		t.mock.timers.tick(1_000);
+	}
+	await ioPause(100);
+	// The model shows up too late: no read is left for this task.
+	write([{ id: "t1", label: "from the file", model: "claude-bridge/claude-opus-5-5" }]);
+	for (let tick = 0; tick < 5; tick++) {
+		t.mock.timers.tick(1_000);
+		await ioPause(50);
+	}
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ subagent from the file +\d+(?::\d\d)+ │$/], "left alone after the bounded reads");
 	sim.emit("session_shutdown");
 });
 
@@ -1920,7 +2216,7 @@ test("T102 the screenshot's sequence with status events flowing: after the refus
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("tD", "queued", 6));
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("tC", "running", 7));
 	sim.emitEvent("gentle-pi:notification:source", subagentEvent("tD", "running", 8));
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ gentle-ai-worker Agent one says hello │", "│ ⠹ gentle-ai-worker Agent two says hello │"]);
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ gentle-ai-worker Agent one says h… \d+(?::\d\d)+ │$/, /^│ ⠹ gentle-ai-worker Agent two says h… \d+(?::\d\d)+ │$/]);
 	sim.emit("session_shutdown");
 });
 
@@ -1937,11 +2233,11 @@ test("T102 the same sequence when the workers' status events never arrive: both 
 	assert.deepEqual(agentRows(railOf(sim)(47)), [], "explorers folded, no row for a refused launch");
 	tool("tool_execution_start", { toolName: "subagent_run", toolCallId: "w1", args: { agent: "gentle-ai-worker", task: "Agent one says hello", mode: "task" } });
 	tool("tool_execution_start", { toolName: "subagent_run", toolCallId: "w2", args: { agent: "gentle-ai-worker", task: "Agent two says hello", mode: "task" } });
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ gentle-ai-worker Agent one says hello │", "│ ⠹ gentle-ai-worker Agent two says hello │"], "both live from their calls alone");
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ gentle-ai-worker Agent one says h… \d+(?::\d\d)+ │$/, /^│ ⠹ gentle-ai-worker Agent two says h… \d+(?::\d\d)+ │$/], "both live from their calls alone");
 	const end = (id: string, taskId: string, label: string) => tool("tool_execution_end", { toolName: "subagent_run", toolCallId: id, isError: false, result: { content: [{ type: "text", text: `Task ${taskId} completed` }], details: { gentleAgents: { taskId, agent: "gentle-ai-worker", status: "completed", mode: "task", cwd: "E:/DEV/app", label, turns: 2, toolCalls: 3, lastStep: "done", model: "anthropic/claude-opus-5-5", thinking: "high" } } } });
 	t.mock.timers.tick(5_000);
 	end("w2", "tD", "agent two");
-	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ⠹ gentle-ai-worker Agent one says hello │", "│ ✓ gentle-ai-worker agent two  opus · high │"], "the second worker's result closes its row; the first stays live");
+	assertRows(agentRows(railOf(sim)(47)), [/^│ ⠹ gentle-ai-worker Agent one says h… 0:05 │$/, /^│ ✓ gentle-ai-worker agent two  opus · high │$/], "the second worker\'s result closes its row; the first stays live, its time ticking");
 	end("w1", "tC", "agent one");
 	assert.deepEqual(agentRows(railOf(sim)(47)), ["│ ✓ gentle-ai-worker agent one  opus · high │", "│ ✓ gentle-ai-worker agent two  opus · high │"]);
 	// A call whose end was lost goes when the run settles.
@@ -2092,7 +2388,7 @@ test("S95 a restart with the state file off stays dormant from the start until /
 	assert.equal(sim.customs.length, 0);
 	assert.equal(sim.notices.at(-1), "Fisi Dock is off · /fisi-dock on turns it back on");
 	await fisiDockCommand(sim, "");
-	assert.deepEqual(sim.selects.at(-1), { title: "Fisi Dock is off", options: ["on", "off"] }, "alone, the picker says it is off");
+	assert.deepEqual(sim.selects.at(-1), { title: "Fisi Dock is off", options: ["on", "off", "settings"] }, "alone, the picker says it is off");
 	assert.equal(sim.widgets.size, 0, "Esc keeps it off");
 
 	await fisiDockCommand(sim, "on");
@@ -2110,7 +2406,7 @@ test("S95 an unknown argument shows the usage and changes nothing", async (t) =>
 	sim.widgets.get("fisi-dock")!(sim.tui);
 	for (const args of ["maybe", "of", "on off"]) {
 		await fisiDockCommand(sim, args);
-		assert.equal(sim.notices.at(-1), "Usage: /fisi-dock on | off (alone: pick on or off)");
+		assert.equal(sim.notices.at(-1), "Usage: /fisi-dock on | off | settings (alone: pick one)");
 	}
 	assert.equal(sim.selects.length, 0, "an argument never opens the picker");
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { enabled: true, themeApplied: true }, "no state written");
@@ -2121,7 +2417,7 @@ test("S95 an unknown argument shows the usage and changes nothing", async (t) =>
 	await fisiDockCommand(sim, " OFF ");
 	assertGentleShellOwns(sim, "off, any case and spacing");
 	await fisiDockCommand(sim, "bogus");
-	assert.equal(sim.notices.at(-1), "Usage: /fisi-dock on | off (alone: pick on or off)");
+	assert.equal(sim.notices.at(-1), "Usage: /fisi-dock on | off | settings (alone: pick one)");
 	await fisiDockCommand(sim, "off");
 	assert.equal(sim.notices.at(-1), "Fisi Dock is already off");
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { enabled: false, themeApplied: true });
@@ -2139,7 +2435,7 @@ test("S98 /fisi-dock alone opens an on/off picker, the change first, that switch
 
 	// On: Esc keeps everything as it was, with no notice and nothing saved.
 	await fisiDockCommand(sim, "");
-	assert.deepEqual(sim.selects, [{ title: "Fisi Dock is on", options: ["off", "on"] }]);
+	assert.deepEqual(sim.selects, [{ title: "Fisi Dock is on", options: ["off", "on", "settings"] }]);
 	assert.deepEqual(sim.notices, []);
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { enabled: true, themeApplied: true });
 	assert.deepEqual(sim.themes, []);
@@ -2158,7 +2454,7 @@ test("S98 /fisi-dock alone opens an on/off picker, the change first, that switch
 	// Off: the picker says so and offers on first; picking the current state says so.
 	sim.picks.push("off");
 	await fisiDockCommand(sim, "");
-	assert.deepEqual(sim.selects.at(-1), { title: "Fisi Dock is off", options: ["on", "off"] });
+	assert.deepEqual(sim.selects.at(-1), { title: "Fisi Dock is off", options: ["on", "off", "settings"] });
 	assert.equal(sim.notices.at(-1), "Fisi Dock is already off");
 	sim.picks.push("on");
 	await fisiDockCommand(sim, "");
@@ -2481,10 +2777,10 @@ test("T9 a delegated child session (GENTLE_PI_AGENTS_CHILD=1) or a session witho
 	headless.emit("session_shutdown");
 });
 
-test("S95 /fisi-dock offers on and off as completions", () => {
+test("S95 /fisi-dock offers on and off as completions, then settings (S1)", () => {
 	const sim = simulate("E:\\DEV\\app");
 	const command = sim.commands.get("fisi-dock") as Command & { getArgumentCompletions?(prefix: string): { value: string }[] | null };
-	assert.deepEqual(command.getArgumentCompletions?.("")?.map((item) => item.value), ["on", "off"]);
+	assert.deepEqual(command.getArgumentCompletions?.("")?.map((item) => item.value), ["on", "off", "settings"]);
 	assert.deepEqual(command.getArgumentCompletions?.("of")?.map((item) => item.value), ["off"]);
 });
 
@@ -2543,6 +2839,8 @@ test("S1 the startup header is the welcome card, and it takes the slot back when
 	const sim = simulate("E:\\DEV\\projects\\my-app");
 	sim.emit("session_start");
 	assert.match(startCard(sim), /Gentle Shell[\s\S]*with Fisi Dock[\s\S]*Ready in my-app[\s\S]*Resume session +\/resume/);
+	const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+	assert.ok(startCard(sim).includes(`with Fisi Dock ${version}`), "Fisi Dock's own version, from its package.json");
 
 	sim.ctx.ui.setHeader(roseHeader);
 	assert.equal(startCard(sim), "rose", "Gentle Shell's banner lands later");
@@ -2849,3 +3147,803 @@ test("rail mouse clicks toggle MCP dropdown and open PAMC modal directly and via
 	sim.emit("session_shutdown");
 });
 
+// --- /fisi-dock settings (look settings S1, S5, S6) ---------------------------
+
+/** Opens `/fisi-dock settings` (or runs `args`) and mounts its overlay on a `columns` x `rows` terminal. */
+async function openSettings(sim: Sim, columns = 60, rows = 24, args = "settings") {
+	const count = sim.customs.length;
+	let closed = false;
+	const pending = Promise.resolve(fisiDockCommand(sim, args)).then(() => (closed = true));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(sim.customs.length, count + 1, "one overlay opened");
+	const custom = sim.customs.at(-1)!;
+	let renders = 0;
+	const tui = { terminal: { ...sim.tui.terminal, columns, rows }, requestRender: () => void renders++ };
+	const view = custom.factory(tui, {}, KEYS, custom.closed);
+	return { custom, view, pending, closed: () => closed, renders: () => renders, width: overlayWidth(custom, columns) };
+}
+const UP = "\x1b[A";
+const DOWN = "\x1b[B";
+const LEFT = "\x1b[D";
+const RIGHT = "\x1b[C";
+type Rail = { render(width: number): string[]; digest(): string };
+/** The rail shows its MCP row: the session's MCP config read settled, so a later frame differs only by what the test changed. */
+const mcpRead = (sim: Sim) => (sim.parts.get("footer") as Rail).render(57).some((line) => plain(line).includes("mcp "));
+const hasBraille = (lines: string[]) => lines.slice(0, 4).some((line) => /[\u2800-\u28ff]/.test(plain(line)));
+
+test("S1 /fisi-dock settings opens the look overlay: rows, values, hint and a live preview, every row the overlay width; Esc closes", async (t) => {
+	stateDir(t, true);
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const settings = await openSettings(sim);
+	assert.equal(settings.custom.options?.overlay, true);
+	assert.equal(settings.width, 60);
+	const lines = settings.view.render(settings.width);
+	assert.equal(lines.length, 24, "the whole screen height");
+	for (const line of lines) assert.equal(visibleWidth(line), 60, "opaque: every row the overlay width");
+	const shown = lines.map(plain);
+	assert.match(shown[0], /^ Fisi Dock look/);
+	assert.match(shown[2], /^ › logo +‹ braille › *$/);
+	assert.match(shown[3], /^ {3}frames +‹ faded › *$/);
+	assert.match(shown[4], /^ {3}colors +‹ vivid › *$/);
+	assert.match(shown[5], /^ {3}accent +‹ pink › *$/);
+	assert.match(shown[6], /^ {3}divider +‹ medium › *$/);
+	assert.match(shown[7], /^ {3}motion +‹ on › *$/);
+	assert.ok(shown.some((line) => line.includes("session")), "the live preview of the rail");
+	assert.match(shown.at(-1)!, /^ ↑↓ choose · ←→ change · Esc close *$/);
+	console.log(`--- simulated /fisi-dock settings, 60x24, default look\n${shown.join("\n")}`);
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(RIGHT);
+	const after = settings.view.render(60).map(plain);
+	assert.match(after[3], /^ › frames +‹ classic › *$/);
+	console.log(`--- simulated /fisi-dock settings, 60x24, after ↓ →\n${after.join("\n")}`);
+	assert.equal(settings.closed(), false);
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	assert.ok(settings.closed());
+	sim.emit("session_shutdown");
+});
+
+test("S1 S5 each change applies at once and is saved: the rail repaints (memo and digest follow the look), state.json keeps its other keys", async (t) => {
+	const path = stateDir(t, true);
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rail = sim.parts.get("footer") as Rail;
+	await waitFor(() => mcpRead(sim));
+	assert.ok(mcpRead(sim), "the MCP row shows");
+	const before = rail.render(57);
+	const digest = rail.digest();
+	assert.ok(hasBraille(before), "today's braille logo (S6)");
+	const settings = await openSettings(sim);
+
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(RIGHT);
+	assert.ok(settings.renders() > 0, "a change repaints");
+	assert.deepEqual(readState(path), { enabled: true, themeApplied: true, look: { logo: "braille", frames: "classic", colors: "vivid", accent: "pink", divider: "medium", motion: "on", sections: DEFAULT_SECTIONS } });
+	const classic = rail.render(57);
+	assert.notDeepEqual(classic, before, "the frames changed with no other model change");
+	assert.notEqual(rail.digest(), digest, "Gentle Shell's rail memo sees the change");
+
+	settings.view.handleInput?.(UP);
+	settings.view.handleInput?.("l");
+	settings.view.handleInput?.("l");
+	assert.equal(readState(path).look.logo, "none");
+	assert.ok(!hasBraille(rail.render(57)), "no logo");
+
+	settings.view.handleInput?.("j");
+	settings.view.handleInput?.("j");
+	settings.view.handleInput?.("\r");
+	assert.equal(readState(path).look.colors, "soft", "Enter cycles forward");
+	const soft = rail.render(57);
+	settings.view.handleInput?.(LEFT);
+	assert.notDeepEqual(rail.render(57), soft, "the colors repaint too");
+
+	// Back to the default look: the very first rail again.
+	settings.view.handleInput?.("k");
+	settings.view.handleInput?.("k");
+	settings.view.handleInput?.(RIGHT);
+	settings.view.handleInput?.("j");
+	settings.view.handleInput?.(LEFT);
+	assert.deepEqual(readState(path).look, { logo: "braille", frames: "faded", colors: "vivid", accent: "pink", divider: "medium", motion: "on", sections: DEFAULT_SECTIONS });
+	assert.deepEqual(rail.render(57), before);
+	assert.equal(rail.digest(), digest);
+	settings.view.handleInput?.("q");
+	await settings.pending;
+	sim.emit("session_shutdown");
+});
+
+test("look-more S6 settings › sections: → opens the list, space hides, Shift+↑ and K move; each change is saved and the rail and /dock repaint; Esc goes back, Esc again closes", async (t) => {
+	const path = stateDir(t, true);
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rail = sim.parts.get("footer") as Rail;
+	await waitFor(() => mcpRead(sim));
+	const titles = (lines: string[]) => lines.map(plain).filter((line) => /^. ╭─ /.test(line)).map((line) => line.slice(5).split(" ")[0]);
+	const before = rail.render(57);
+	const digest = rail.digest();
+	assert.deepEqual(titles(before), ["session", "ODD", "todo"], "today's rail");
+	const settings = await openSettings(sim);
+	for (let index = 0; index < 6; index++) settings.view.handleInput?.(DOWN);
+	assert.match(plain(settings.view.render(60)[8]), /^ › sections  7 of 7 › *$/);
+	settings.view.handleInput?.(RIGHT);
+	let shown = settings.view.render(60).map(plain);
+	assert.match(shown[0], /^ Fisi Dock look › sections *$/);
+	assert.match(shown[2], /^ › \[x\] heads-up *$/);
+	assert.match(shown.at(-1)!, /^ space show · shift\+↑↓ move · Esc back *$/);
+	assert.equal(existsSync(path) ? readState(path).look : undefined, undefined, "opening the list saves nothing");
+
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(" ");
+	const sections = () => (readState(path).look.sections as { id: string; shown: boolean }[]).map((section) => `${section.shown ? "" : "!"}${section.id}`).join(" ");
+	assert.equal(sections(), "heads-up !odd rdd ci agents todo changes", "space hides ODD, saved");
+	assert.deepEqual(titles(rail.render(57)), ["session", "todo"], "the rail drops ODD at once");
+	assert.notEqual(rail.digest(), digest, "Gentle Shell's rail memo sees it");
+
+	for (let index = 0; index < 4; index++) settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.("\x1b[1;2A");
+	assert.equal(sections(), "heads-up !odd rdd ci todo agents changes", "Shift+↑ moves todo up");
+	settings.view.handleInput?.("K");
+	settings.view.handleInput?.("K");
+	settings.view.handleInput?.("K");
+	assert.equal(sections(), "heads-up todo !odd rdd ci agents changes", "K moves it on");
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(" ");
+	assert.equal(sections(), "heads-up todo odd rdd ci agents changes", "the cursor followed todo: one down is ODD, space shows it again");
+	assert.deepEqual(titles(rail.render(57)), ["session", "todo", "ODD"], "todo above ODD on the rail");
+	shown = settings.view.render(60).map(plain);
+	assert.match(shown[3], /^ {3}\[x\] todo *$/);
+	assert.match(shown[4], /^ › \[x\] odd *$/, "the cursor on ODD");
+	assert.ok(settings.renders() > 0, "each change repaints");
+
+	settings.view.handleInput?.("\x1b");
+	assert.equal(settings.closed(), false, "Esc goes back to the main rows");
+	shown = settings.view.render(60).map(plain);
+	assert.match(shown[0], /^ Fisi Dock look *$/);
+	assert.match(shown[8], /^ › sections  7 of 7 › *$/);
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	assert.ok(settings.closed(), "Esc on the main rows closes");
+	assert.deepEqual(readState(path), { enabled: true, themeApplied: true, look: { logo: "braille", frames: "faded", colors: "vivid", accent: "pink", divider: "medium", motion: "on", sections: ["heads-up", "todo", "odd", "rdd", "ci", "agents", "changes"].map((id) => ({ id, shown: true })) } });
+
+	// /dock takes the order too.
+	const dockOpen = Promise.resolve(sim.commands.get("dock")!.handler("", sim.ctx));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const dock = sim.customs.at(-1)!;
+	const dockView = dock.factory({ terminal: { ...sim.tui.terminal, columns: 64, rows: 60 }, requestRender() {} }, {}, KEYS, dock.closed);
+	const dockLines = dockView.render(64).map(plain);
+	const at = (title: string) => dockLines.findIndex((line) => line.includes(`╭─ ${title}`));
+	assert.ok(at("session") >= 0 && at("session") < at("todo") && at("todo") < at("ODD"), "/dock: session, todo, ODD");
+	dockView.handleInput?.("");
+	await dockOpen;
+	sim.emit("session_shutdown");
+});
+
+test("S1 the prompt line, the user frame, the narrow cards, the prompt box and /dock paint in the chosen look", async (t) => {
+	stateDir(t, true);
+	class UserMessageComponent {
+		children: unknown[] = [];
+		render(width: number): string[] {
+			return [" hola".padEnd(width)];
+		}
+	}
+	const message = new UserMessageComponent();
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => false, branch: () => todoBranch(1, 3), editor: gentleEditorFactory() });
+	Object.assign(sim.tui, { children: [{ children: [message] }] });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const strip = sim.widgets.get("fisi-dock-strip")!(sim.tui);
+	const promptLine = sim.widgets.get("fisi-dock-prompt-line")!(sim.tui);
+	const editor = (sim.ctx.ui.getEditorComponent() as EditorFactory)(sim.tui, {}, {});
+	const labels = { mode: undefined, modelId: "claude-opus-5-5", effort: "high" };
+	const vivid = { user: message.render(20), cards: strip.render(53), box: editor.render(60) };
+	editor.render(12);
+	const vividLine = promptLine.render(100);
+	assert.deepEqual(vividLine, renderPromptLine(labels, 100), "the box did not fit: the line under the prompt");
+
+	const settings = await openSettings(sim);
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(RIGHT);
+	editor.render(12);
+	assert.deepEqual(promptLine.render(100), renderPromptLine(labels, 100, "soft"), "the line under the prompt");
+	assert.notDeepEqual(promptLine.render(100), vividLine);
+	assert.deepEqual(message.render(20), frameUserLines((width) => [" hola".padEnd(width)], 20, "soft", "faded"), "the user frame");
+	assert.notDeepEqual(message.render(20), vivid.user);
+	assert.ok(strip.render(53).some((line) => plain(line).startsWith("╭─ todo")));
+	assert.notDeepEqual(strip.render(53), vivid.cards, "the todo card (its memo follows the look)");
+	assert.notDeepEqual(editor.render(60), vivid.box, "the prompt box labels");
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+
+	// /dock draws the panel in the chosen look too.
+	const dockOpen = Promise.resolve(sim.commands.get("dock")!.handler("", sim.ctx));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const dock = sim.customs.at(-1)!;
+	const dockView = dock.factory({ terminal: { ...sim.tui.terminal, columns: 64, rows: 36 }, requestRender() {} }, {}, KEYS, dock.closed);
+	const softDock = dockView.render(64);
+	const second = await openSettings(sim);
+	second.view.handleInput?.(DOWN);
+	second.view.handleInput?.(RIGHT);
+	second.view.handleInput?.("\x1b");
+	await second.pending;
+	assert.notDeepEqual(dockView.render(64), softDock, "the frames change in /dock");
+	dockView.handleInput?.("\x1b");
+	await dockOpen;
+	sim.emit("session_shutdown");
+});
+
+test("look-more S3 the prompt box and the user frame follow the frames: faded by default, classic and none at once from the menu", async (t) => {
+	stateDir(t, true);
+	class UserMessageComponent {
+		children: unknown[] = [];
+		render(width: number): string[] {
+			return [" hola".padEnd(width)];
+		}
+	}
+	const message = new UserMessageComponent();
+	const pi = (width: number) => [" hola".padEnd(width)];
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => false, editor: gentleEditorFactory() });
+	Object.assign(sim.tui, { children: [{ children: [message] }] });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const editor = (sim.ctx.ui.getEditorComponent() as EditorFactory)(sim.tui, {}, {});
+	const faded = { user: message.render(30), box: editor.render(60) };
+	assert.deepEqual(faded.user, frameUserLines(pi, 30, "vivid", "faded"), "the default look: faded");
+	assert.equal(plain(faded.box[0]).slice(0, 2), "╭─");
+
+	const settings = await openSettings(sim);
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(RIGHT);
+	const classic = { user: message.render(30), box: editor.render(60) };
+	assert.deepEqual(classic.user, frameUserLines(pi, 30), "classic: today's user frame");
+	assert.notDeepEqual(classic.user, faded.user);
+	assert.notDeepEqual(classic.box, faded.box, "the prompt box repaints at once");
+	assert.deepEqual(classic.box.map(plain), faded.box.map(plain), "same geometry");
+	settings.view.handleInput?.(RIGHT);
+	const none = { user: message.render(30), box: editor.render(60) };
+	assert.deepEqual(none.user, frameUserLines(pi, 30, "vivid", "none"));
+	assert.deepEqual(none.user.map((line) => plain(line).replace(/\x1b\]133;[ABC]\x07/g, "")), [`── you ${"─".repeat(23)}`, `  hola${" ".repeat(24)}`]);
+	assert.equal(none.box.length, classic.box.length - 1, "no bottom border");
+	assert.ok(plain(none.box.find((row) => plain(row).includes("✿"))!).startsWith("── ✿"), "the labels on a bare rule");
+	assert.ok(!none.box.some((row) => /[│╭╮╰╯]/u.test(plain(row))));
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	sim.emit("session_shutdown");
+});
+
+test("S1 colors switch Pi's theme to Fisi-Dock-Soft and back while Fisi Dock's theme is in use; the user's theme is never remembered as Fisi Dock's, and off puts it back", async (t) => {
+	const path = stateDir(t);
+	seedState(path, { enabled: true, theme: "dark", themeApplied: true });
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "Fisi-Dock" });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	/** Opens the menu, changes the colors with `key` and closes it. */
+	const changeColors = async (key: string) => {
+		const settings = await openSettings(sim);
+		settings.view.handleInput?.(DOWN);
+		settings.view.handleInput?.(DOWN);
+		settings.view.handleInput?.(key);
+		settings.view.handleInput?.("\x1b");
+		await settings.pending;
+	};
+	await changeColors(RIGHT);
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Soft"]);
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Soft");
+	assert.deepEqual(readState(path), { enabled: true, theme: "dark", themeApplied: true, look: { logo: "braille", frames: "faded", colors: "soft", accent: "pink", divider: "medium", motion: "on", sections: DEFAULT_SECTIONS } });
+	await changeColors(RIGHT);
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Soft", "Fisi-Dock-Light"], "look-more S5: soft, then light");
+	await changeColors(LEFT);
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Soft", "Fisi-Dock-Light", "Fisi-Dock-Soft"]);
+
+	// Off from Fisi-Dock-Soft puts the user's theme back; on remembers nothing of Fisi Dock's and takes the soft theme.
+	await fisiDockCommand(sim, "off");
+	assert.equal(sim.ctx.ui.theme.name, "dark");
+	assert.equal(readState(path).theme, "dark");
+	await fisiDockCommand(sim, "on");
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Soft");
+	assert.match(sim.notices.at(-1)!, /^Fisi Dock on · theme Fisi-Dock-Soft/);
+	assert.equal(readState(path).theme, "dark");
+	sim.emit("session_shutdown");
+
+	// A user theme in use is the user's: colors change the dock, never the theme.
+	const own = stateDir(t, true);
+	const mine = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "light" });
+	mine.emit("session_start");
+	const other = await openSettings(mine);
+	other.view.handleInput?.(DOWN);
+	other.view.handleInput?.(DOWN);
+	other.view.handleInput?.(RIGHT);
+	assert.deepEqual(mine.themes, []);
+	assert.equal(readState(own).look.colors, "soft");
+	other.view.handleInput?.("\x1b");
+	await other.pending;
+	mine.emit("session_shutdown");
+});
+
+test("S1 S4 L8 colors never switch Pi's theme inside the menu's key handler: the menu stays responsive, and the theme follows once, when it closes", async (t) => {
+	const path = stateDir(t);
+	seedState(path, { enabled: true, theme: "dark", themeApplied: true });
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "Fisi-Dock" });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rail = sim.parts.get("footer") as Rail;
+	const vivid = rail.render(57);
+	const settings = await openSettings(sim);
+	// Pi's setter (interactive-mode.js setTheme -> theme-controller.js applyThemeName -> notifyChanged, and
+	// theme.js setTheme -> onThemeChange) invalidates the whole UI and saves settings.json, synchronously:
+	// here it repaints the menu and the rail at once, and records each call made while a key is handled.
+	const setTheme = sim.ctx.ui.setTheme;
+	let keyDepth = 0;
+	const duringKey: string[] = [];
+	sim.ctx.ui.setTheme = (name: string) => {
+		if (keyDepth > 0) duringKey.push(name);
+		if (sim.themes.length > 50) throw new Error("theme switch loop");
+		settings.view.render(60);
+		rail.render(57);
+		return setTheme(name);
+	};
+	const press = (data: string) => {
+		keyDepth++;
+		try {
+			settings.view.handleInput?.(data);
+		} finally {
+			keyDepth--;
+		}
+	};
+	press(DOWN);
+	press(DOWN);
+	// Held → (key repeat): vivid, soft, light, vivid, soft (look-more S5 adds light).
+	for (let index = 0; index < 4; index++) press(RIGHT);
+	assert.deepEqual(duringKey, [], "no theme switch inside the key handler");
+	assert.deepEqual(sim.themes, [], "nor while the menu is open");
+	assert.equal(readState(path).look.colors, "soft", "each change is saved at once");
+	assert.match(plain(settings.view.render(60)[4]), /^ › colors +‹ soft › *$/);
+	assert.notDeepEqual(rail.render(57), vivid, "the rail repaints in soft at once");
+	assert.equal(settings.closed(), false);
+	press("\x1b");
+	await settings.pending;
+	assert.ok(settings.closed(), "Esc still closes the menu");
+	assert.deepEqual(duringKey, [], "not in the closing key's handler either");
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Soft"], "one switch, after the menu closed, to the last colors' theme");
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Soft");
+	assert.deepEqual(readState(path), { enabled: true, theme: "dark", themeApplied: true, look: { logo: "braille", frames: "faded", colors: "soft", accent: "pink", divider: "medium", motion: "on", sections: DEFAULT_SECTIONS } });
+
+	// Back and forth to the colors already in use: no switch at all.
+	const again = await openSettings(sim);
+	again.view.handleInput?.(DOWN);
+	again.view.handleInput?.(DOWN);
+	again.view.handleInput?.(RIGHT);
+	again.view.handleInput?.(LEFT);
+	again.view.handleInput?.("\x1b");
+	await again.pending;
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Soft"]);
+	sim.emit("session_shutdown");
+
+	// As before: with the colors left as they were, Fisi-Dock picked in /settings beside soft colors stays.
+	writeFileSync(path, JSON.stringify({ enabled: true, theme: "dark", themeApplied: true, look: { colors: "soft" } }));
+	const picked = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "Fisi-Dock" });
+	picked.emit("session_start");
+	const logoOnly = await openSettings(picked);
+	logoOnly.view.handleInput?.(RIGHT);
+	logoOnly.view.handleInput?.("\x1b");
+	await logoOnly.pending;
+	assert.equal(readState(path).look.logo, "text");
+	assert.deepEqual(picked.themes, [], "a logo change switches no theme");
+	picked.emit("session_shutdown");
+});
+
+test("S1 Fisi-Dock-Soft in use counts as Fisi Dock's own theme: on and the first start never remember it, and the first start applies the saved colors' theme", async (t) => {
+	const path = stateDir(t);
+	seedState(path, { enabled: false, theme: "light", themeApplied: true });
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "Fisi-Dock-Soft" });
+	sim.emit("session_start");
+	await fisiDockCommand(sim, "on");
+	assert.equal(readState(path).theme, "light", "Fisi-Dock-Soft is never remembered");
+	await fisiDockCommand(sim, "off");
+	assert.equal(sim.ctx.ui.theme.name, "light");
+	sim.emit("session_shutdown");
+
+	const fresh = stateDir(t);
+	const soft = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "Fisi-Dock-Soft" });
+	soft.emit("session_start");
+	assert.deepEqual(soft.themes, []);
+	assert.deepEqual(readState(fresh), { enabled: true, themeApplied: true }, "the step is done, nothing remembered");
+	soft.emit("session_shutdown");
+
+	const first = stateDir(t);
+	mkdirSync(join(first, ".."), { recursive: true });
+	writeFileSync(first, JSON.stringify({ look: { colors: "soft" } }));
+	const start = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "dark" });
+	start.emit("session_start");
+	assert.deepEqual(start.themes, ["Fisi-Dock-Soft"], "the first start applies the soft theme");
+	assert.deepEqual(readState(first), { look: { colors: "soft" }, enabled: true, theme: "dark", themeApplied: true });
+	assert.match(start.notices.at(-1)!, /^Fisi Dock applied its theme/);
+	start.emit("session_shutdown");
+});
+
+test("S5 a saved look is used from the next session start; S6 without one the look is today's", async (t) => {
+	const path = stateDir(t, true);
+	const plainSim = simulate("E:\\DEV\\app", { ownsHost: () => true });
+	plainSim.emit("session_start");
+	plainSim.widgets.get("fisi-dock")!(plainSim.tui);
+	const today = (plainSim.parts.get("footer") as Rail).render(57);
+	assert.ok(hasBraille(today));
+	const settings = await openSettings(plainSim);
+	settings.view.handleInput?.(RIGHT);
+	settings.view.handleInput?.(RIGHT);
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(LEFT);
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	// Both rails once the MCP config read settled, so only the look can differ.
+	await waitFor(() => mcpRead(plainSim));
+	assert.ok(mcpRead(plainSim), "the MCP row shows");
+	const picked = (plainSim.parts.get("footer") as Rail).render(57);
+	plainSim.emit("session_shutdown");
+	assert.deepEqual(readState(path).look, { logo: "none", frames: "none", colors: "vivid", accent: "pink", divider: "medium", motion: "on", sections: DEFAULT_SECTIONS });
+
+	const next = simulate("E:\\DEV\\app", { ownsHost: () => true });
+	next.emit("session_start");
+	next.widgets.get("fisi-dock")!(next.tui);
+	await waitFor(() => mcpRead(next));
+	assert.ok(mcpRead(next), "the MCP row shows");
+	const rail = (next.parts.get("footer") as Rail).render(57);
+	assert.ok(!hasBraille(rail), "no logo from the start");
+	assert.deepEqual(rail, picked);
+	assert.notDeepEqual(rail, today);
+	next.emit("session_shutdown");
+});
+
+test("S5 while off, /fisi-dock settings still saves the look and sets no theme; /fisi-dock on applies it", async (t) => {
+	const path = stateDir(t);
+	seedState(path, { enabled: false, theme: "dark", themeApplied: true });
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "dark" });
+	sim.emit("session_start");
+	const settings = await openSettings(sim);
+	const shown = settings.view.render(60).map(plain);
+	assert.match(shown[2], /‹ braille ›/);
+	assert.ok(shown.some((line) => line.includes("session")), "a preview even while off");
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(RIGHT);
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(RIGHT);
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	assert.deepEqual(readState(path), { enabled: false, theme: "dark", themeApplied: true, look: { logo: "braille", frames: "classic", colors: "soft", accent: "pink", divider: "medium", motion: "on", sections: DEFAULT_SECTIONS } });
+	assert.deepEqual(sim.themes, [], "off: the theme is the user's");
+	assertGentleShellOwns(sim, "still off");
+	await fisiDockCommand(sim, "on");
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Soft"]);
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rail = (sim.parts.get("footer") as Rail).render(57);
+	sim.emit("session_shutdown");
+	const reference = simulate("E:\\DEV\\app", { ownsHost: () => true });
+	reference.emit("session_start");
+	reference.widgets.get("fisi-dock")!(reference.tui);
+	assert.deepEqual((reference.parts.get("footer") as Rail).render(57), rail, "the same look as a fresh start with it saved");
+	reference.emit("session_shutdown");
+});
+
+test("S1 without a UI, /fisi-dock settings only says the look; the picker offers settings after on and off, and completions name it", async (t) => {
+	const path = stateDir(t, true);
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true });
+	sim.emit("session_start");
+	sim.ctx.hasUI = false;
+	await fisiDockCommand(sim, "settings");
+	assert.equal(sim.customs.length, 0);
+	assert.equal(sim.notices.at(-1), "Fisi Dock look: logo braille · frames faded · colors vivid · accent pink · divider medium · motion on · sections 7 of 7 · /fisi-dock settings changes it in the interactive UI");
+	assert.deepEqual(readState(path), { enabled: true, themeApplied: true });
+	sim.ctx.hasUI = true;
+
+	sim.picks.push("settings");
+	const settings = await openSettings(sim, 60, 24, "");
+	assert.deepEqual(sim.selects.at(-1), { title: "Fisi Dock is on", options: ["off", "on", "settings"] });
+	assert.match(settings.view.render(60).map(plain)[0], /Fisi Dock look/);
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	const command = sim.commands.get("fisi-dock") as Command & { getArgumentCompletions?(prefix: string): { value: string }[] | null };
+	assert.deepEqual(command.getArgumentCompletions?.("s")?.map((item) => item.value), ["settings"]);
+	assert.match(command.description ?? "", /settings/);
+	sim.emit("session_shutdown");
+});
+
+// --- look-more S1 divider, S2 motion ----------------------------------------------
+
+test("look-more S2 a saved motion off: a running job schedules no animation repaints and the strip and rail hold the still frame", (t) => {
+	animated(t);
+	const path = stateDir(t, true);
+	writeFileSync(path, JSON.stringify({ enabled: true, themeApplied: true, look: { motion: "off" } }));
+	let renders = 0;
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => false });
+	const tui = { terminal: sim.tui.terminal, requestRender: () => void renders++ };
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(tui);
+	const strip = sim.widgets.get("fisi-dock-strip")!(tui);
+	const rail = sim.parts.get("footer") as Rail;
+	sim.emitEvent("gentle-ai:jobs-sidebar", JOB);
+	assertJobCard(strip.render(64), "⠹", "the still frame at once");
+	const digest = rail.digest();
+	const before = renders;
+	t.mock.timers.tick(800);
+	assert.equal(renders, before, "no spinner timer: no repaints");
+	assert.equal(rail.digest(), digest);
+	assertJobCard(strip.render(64), "⠹");
+	assert.ok(rail.render(47).some((line) => /^│ ⠹ job-1 npm test +\d+(?::\d\d)+ │$/.test(plain(railPanelLine(line)))), "rail agent row, still");
+	sim.emit("session_shutdown");
+});
+
+test("look-more S2 motion off in the menu stops the running spinner's timer at once; on starts it again", async (t) => {
+	animated(t);
+	const path = stateDir(t, true);
+	let renders = 0;
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => false });
+	const tui = { terminal: sim.tui.terminal, requestRender: () => void renders++ };
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(tui);
+	const strip = sim.widgets.get("fisi-dock-strip")!(tui);
+	sim.emitEvent("gentle-ai:jobs-sidebar", JOB);
+	let before = renders;
+	t.mock.timers.tick(80);
+	assert.ok(renders > before, "motion on: the spinner repaints");
+	assertJobCard(strip.render(64), "⠙");
+
+	const settings = await openSettings(sim);
+	settings.view.handleInput?.(UP);
+	settings.view.handleInput?.(UP);
+	assert.match(plain(settings.view.render(60)[7]), /^ › motion +‹ on › *$/);
+	settings.view.handleInput?.(RIGHT);
+	assert.match(plain(settings.view.render(60)[7]), /^ › motion +‹ off › *$/);
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	assert.equal(readState(path).look.motion, "off", "saved");
+	assertJobCard(strip.render(64), "⠹", "the still frame at once");
+	before = renders;
+	t.mock.timers.tick(800);
+	assert.equal(renders, before, "no animation repaints with motion off");
+	assertJobCard(strip.render(64), "⠹");
+
+	const again = await openSettings(sim);
+	again.view.handleInput?.(UP);
+	again.view.handleInput?.(UP);
+	again.view.handleInput?.(RIGHT);
+	again.view.handleInput?.("\x1b");
+	await again.pending;
+	assert.equal(readState(path).look.motion, "on");
+	before = renders;
+	t.mock.timers.tick(80);
+	assert.ok(renders > before, "motion on again: the spinner turns");
+	sim.emit("session_shutdown");
+});
+
+test("look-more S1 the divider row repaints the rail live and is saved: off leaves the first column blank, the panel in place", async (t) => {
+	const path = stateDir(t, true);
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rail = sim.parts.get("footer") as Rail;
+	await waitFor(() => mcpRead(sim));
+	const medium = rail.render(57);
+	const digest = rail.digest();
+	assert.ok(medium.some((line) => plain(line)[0] === "│"), "today's divider");
+	const settings = await openSettings(sim);
+	for (let index = 0; index < 4; index++) settings.view.handleInput?.(DOWN);
+	assert.match(plain(settings.view.render(60)[6]), /^ › divider +‹ medium › *$/);
+	settings.view.handleInput?.(RIGHT);
+	assert.equal(readState(path).look.divider, "off");
+	const off = rail.render(57);
+	assert.notEqual(rail.digest(), digest, "Gentle Shell's rail memo sees the change");
+	assert.ok(off.every((line) => plain(line)[0] === " "), "no divider glyph");
+	assert.deepEqual(off.map((line) => plain(line).slice(1)), medium.map((line) => plain(line).slice(1)), "same panel, same width");
+	settings.view.handleInput?.(RIGHT);
+	settings.view.handleInput?.(RIGHT);
+	assert.equal(readState(path).look.divider, "strong");
+	assert.notDeepEqual(rail.render(57), medium, "strong repaints");
+	settings.view.handleInput?.(RIGHT);
+	assert.deepEqual(rail.render(57), medium, "back to medium: today's rail");
+	settings.view.handleInput?.("q");
+	await settings.pending;
+	sim.emit("session_shutdown");
+});
+
+// --- look-more S4 accent ---------------------------------------------------------------
+
+test("look-more S4 the accent row repaints at once and, once the menu closes, switches Pi's theme to the accent's one, once; off puts the user's theme back", async (t) => {
+	const path = stateDir(t);
+	seedState(path, { enabled: true, theme: "dark", themeApplied: true });
+	class UserMessageComponent {
+		children: unknown[] = [];
+		render(width: number): string[] {
+			return [" hola".padEnd(width)];
+		}
+	}
+	const message = new UserMessageComponent();
+	const pi = (width: number) => [" hola".padEnd(width)];
+	const sim = simulate("E:\DEV\app", { ownsHost: () => true, theme: "Fisi-Dock" });
+	Object.assign(sim.tui, { children: [{ children: [message] }] });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rail = sim.parts.get("footer") as Rail;
+	const pinkRail = rail.render(57);
+	const digest = rail.digest();
+	assert.deepEqual(message.render(30), frameUserLines(pi, 30, "vivid", "faded"), "pink `you`");
+
+	const settings = await openSettings(sim);
+	for (let index = 0; index < 3; index++) settings.view.handleInput?.(DOWN);
+	assert.match(plain(settings.view.render(60)[5]), /^ › accent +‹ pink › *$/);
+	settings.view.handleInput?.(RIGHT);
+	assert.match(plain(settings.view.render(60)[5]), /^ › accent +‹ teal › *$/);
+	assert.equal(readState(path).look.accent, "teal", "saved at once");
+	assert.notEqual(rail.digest(), digest, "Gentle Shell's rail memo sees the change");
+	assert.notDeepEqual(rail.render(57), pinkRail, "the rail repaints in teal (the logo's SHELL)");
+	assert.deepEqual(message.render(30), frameUserLines(pi, 30, "vivid", "faded", "teal"), "`you` in teal");
+	settings.view.handleInput?.(RIGHT);
+	settings.view.handleInput?.(LEFT);
+	assert.deepEqual(sim.themes, [], "no theme switch while the menu is open");
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Teal"], "one switch, to the accent's theme");
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Teal");
+	assert.deepEqual(readState(path), { enabled: true, theme: "dark", themeApplied: true, look: { logo: "braille", frames: "faded", colors: "vivid", accent: "teal", divider: "medium", motion: "on", sections: DEFAULT_SECTIONS } });
+
+	// Soft colors with the teal accent: Fisi-Dock-Teal-Soft.
+	const soft = await openSettings(sim);
+	soft.view.handleInput?.(DOWN);
+	soft.view.handleInput?.(DOWN);
+	soft.view.handleInput?.(RIGHT);
+	soft.view.handleInput?.("\x1b");
+	await soft.pending;
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Teal", "Fisi-Dock-Teal-Soft"]);
+
+	// An accent changed and put back: no switch.
+	const same = await openSettings(sim);
+	for (let index = 0; index < 3; index++) same.view.handleInput?.(DOWN);
+	same.view.handleInput?.(RIGHT);
+	same.view.handleInput?.(LEFT);
+	same.view.handleInput?.("\x1b");
+	await same.pending;
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Teal", "Fisi-Dock-Teal-Soft"]);
+
+	// Back to pink: the pink soft theme.
+	const back = await openSettings(sim);
+	for (let index = 0; index < 3; index++) back.view.handleInput?.(DOWN);
+	back.view.handleInput?.(LEFT);
+	back.view.handleInput?.("\x1b");
+	await back.pending;
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Teal", "Fisi-Dock-Teal-Soft", "Fisi-Dock-Soft"]);
+	assert.equal(readState(path).look.accent, "pink");
+
+	// Off from an accent theme puts the user's theme back; on takes the saved look's theme and remembers nothing of Fisi Dock's.
+	const green = await openSettings(sim);
+	for (let index = 0; index < 3; index++) green.view.handleInput?.(DOWN);
+	green.view.handleInput?.(LEFT);
+	green.view.handleInput?.("\x1b");
+	await green.pending;
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Green-Soft");
+	await fisiDockCommand(sim, "off");
+	assert.equal(sim.ctx.ui.theme.name, "dark");
+	assert.equal(readState(path).theme, "dark");
+	await fisiDockCommand(sim, "on");
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Green-Soft");
+	assert.match(sim.notices.at(-1)!, /^Fisi Dock on · theme Fisi-Dock-Green-Soft/);
+	assert.equal(readState(path).theme, "dark");
+	sim.emit("session_shutdown");
+
+	// A user theme in use: the accent changes the dock, never the theme.
+	const own = stateDir(t, true);
+	const mine = simulate("E:\DEV\app", { ownsHost: () => true, theme: "light" });
+	mine.emit("session_start");
+	const other = await openSettings(mine);
+	for (let index = 0; index < 3; index++) other.view.handleInput?.(DOWN);
+	other.view.handleInput?.(RIGHT);
+	other.view.handleInput?.("\x1b");
+	await other.pending;
+	assert.deepEqual(mine.themes, []);
+	assert.equal(readState(own).look.accent, "teal");
+	mine.emit("session_shutdown");
+});
+
+test("look-more S5 colors light: the menu cycles vivid, soft, light; everything Fisi Dock paints repaints light at once; Pi's theme becomes Fisi-Dock-Light once the menu closed, whatever the accent", async (t) => {
+	const { lightPalette, fgCode, palette } = await import("../lib/palette.ts");
+	const path = stateDir(t);
+	seedState(path, { enabled: true, theme: "dark", themeApplied: true, look: { accent: "teal" } });
+	class UserMessageComponent {
+		children: unknown[] = [];
+		render(width: number): string[] {
+			return [" hola".padEnd(width)];
+		}
+	}
+	const message = new UserMessageComponent();
+	const pi = (width: number) => [" hola".padEnd(width)];
+	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true, theme: "Fisi-Dock-Teal" });
+	Object.assign(sim.tui, { children: [{ children: [message] }] });
+	sim.emit("session_start");
+	sim.widgets.get("fisi-dock")!(sim.tui);
+	const rail = sim.parts.get("footer") as Rail;
+	const header = sim.parts.get("header") as { render(width: number): string[]; digest(): string };
+	const before = { rail: rail.render(57), digest: rail.digest(), header: header.digest(), card: sim.startHeader.current?.render(100) ?? [] };
+	assert.ok(before.rail.join("\n").includes(fgCode(palette.text)), "vivid paints today's text");
+
+	const settings = await openSettings(sim);
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(DOWN);
+	settings.view.handleInput?.(RIGHT);
+	settings.view.handleInput?.(RIGHT);
+	assert.match(plain(settings.view.render(60)[4]), /^ › colors +‹ light › *$/);
+	assert.equal(readState(path).look.colors, "light", "saved at once");
+	assert.notEqual(rail.digest(), before.digest, "Gentle Shell's rail memo sees the change");
+	const lightRail = rail.render(57).join("\n");
+	assert.ok(lightRail.includes(fgCode(lightPalette.text)) && !lightRail.includes(fgCode(palette.text)), "the rail repaints in the light palette");
+	assert.notEqual(header.digest(), before.header, "the top row's memo sees the colors");
+	assert.ok(header.render(60).join("").includes(fgCode(lightPalette.muted)), "the path in the light muted");
+	assert.deepEqual(message.render(30), frameUserLines(pi, 30, "light", "faded", "teal"), "the user frame in light, `you` in the light teal");
+	const card = sim.startHeader.current?.render(100) ?? [];
+	assert.ok(card.join("").includes(fgCode(lightPalette.text)) && !card.join("").includes(fgCode(palette.text)), "the welcome card in light");
+	assert.deepEqual(sim.themes, [], "no theme switch while the menu is open");
+	settings.view.handleInput?.("\x1b");
+	await settings.pending;
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Light"], "one switch, to the light theme, though the accent is teal");
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Light");
+	assert.deepEqual(readState(path), { enabled: true, theme: "dark", themeApplied: true, look: { logo: "braille", frames: "faded", colors: "light", accent: "teal", divider: "medium", motion: "on", sections: DEFAULT_SECTIONS } });
+
+	// The accent row still saves in light, and the panel follows it, but the theme stays Fisi-Dock-Light.
+	const accent = await openSettings(sim);
+	for (let index = 0; index < 3; index++) accent.view.handleInput?.(DOWN);
+	accent.view.handleInput?.(RIGHT);
+	const lilacRail = rail.render(57);
+	accent.view.handleInput?.("\x1b");
+	await accent.pending;
+	assert.equal(readState(path).look.accent, "lilac");
+	assert.notDeepEqual(lilacRail.join("\n"), lightRail, "the panel's pink family follows the accent");
+	assert.deepEqual(sim.themes, ["Fisi-Dock-Light"], "no switch: one light theme for every accent");
+
+	// Off from Fisi-Dock-Light puts the user's theme back; on takes the light theme again and remembers nothing of Fisi Dock's.
+	await fisiDockCommand(sim, "off");
+	assert.equal(sim.ctx.ui.theme.name, "dark");
+	await fisiDockCommand(sim, "on");
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Light");
+	assert.equal(readState(path).theme, "dark");
+
+	// Light back to vivid: Fisi Dock's theme for the accent.
+	const back = await openSettings(sim);
+	back.view.handleInput?.(DOWN);
+	back.view.handleInput?.(DOWN);
+	back.view.handleInput?.(RIGHT);
+	back.view.handleInput?.("\x1b");
+	await back.pending;
+	assert.equal(sim.ctx.ui.theme.name, "Fisi-Dock-Lilac");
+	assert.equal(readState(path).look.colors, "vivid");
+	sim.emit("session_shutdown");
+});
+
+test("look-more S4 every Fisi Dock theme counts as its own: on never remembers it, off restores the user's theme from it, and the first start applies the saved look's theme", async (t) => {
+	const { FISI_DOCK_THEMES } = await import("../lib/look.ts");
+	for (const name of FISI_DOCK_THEMES) {
+		const path = stateDir(t);
+		seedState(path, { enabled: false, theme: "light", themeApplied: true });
+		const sim = simulate("E:\DEV\app", { ownsHost: () => true, theme: name });
+		sim.emit("session_start");
+		await fisiDockCommand(sim, "on");
+		assert.equal(readState(path).theme, "light", `${name} is never remembered`);
+		await fisiDockCommand(sim, "off");
+		assert.equal(sim.ctx.ui.theme.name, "light", `off from ${name}`);
+		sim.emit("session_shutdown");
+
+		const fresh = stateDir(t);
+		const start = simulate("E:\DEV\app", { ownsHost: () => true, theme: name });
+		start.emit("session_start");
+		assert.deepEqual(start.themes, [], `${name} in use at the first start: no switch`);
+		assert.deepEqual(readState(fresh), { enabled: true, themeApplied: true }, `${name}: the step is done, nothing remembered`);
+		start.emit("session_shutdown");
+	}
+	const first = stateDir(t);
+	mkdirSync(join(first, ".."), { recursive: true });
+	writeFileSync(first, JSON.stringify({ look: { accent: "lilac" } }));
+	const start = simulate("E:\DEV\app", { ownsHost: () => true, theme: "dark" });
+	start.emit("session_start");
+	assert.deepEqual(start.themes, ["Fisi-Dock-Lilac"], "the first start applies the lilac theme");
+	assert.deepEqual(readState(first), { look: { accent: "lilac" }, enabled: true, theme: "dark", themeApplied: true });
+	start.emit("session_shutdown");
+});

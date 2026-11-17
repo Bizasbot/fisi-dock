@@ -132,13 +132,13 @@ test("narrow top row with cost 0 and tokens: tokens and the ≈ estimate instead
 	assert.deepEqual(plain(renderNarrowHeader(paid, 64)).slice(0, 1), [" app  $0.012"], "a real cost wins");
 });
 
-test("the narrow header ends with a full-width rule so the conversation below reads apart (S36)", () => {
+test("the narrow header ends with a full-width gray rule so the conversation below reads apart (S36)", () => {
 	const model = { session: { project: "Año Nuevo Demo Project", branch: "main", contextPercent: 40 } };
 	for (const width of [64, 53, 40, 20]) {
 		const lines = renderNarrowHeader(model, width);
 		assert.equal(lines.length, 2, `${width}: header row and rule`);
 		assert.equal(plain([lines[1]])[0], "─".repeat(width), `${width}: rule spans the width`);
-		assert.ok(lines[1].includes("\x1b[38;2;244;56;136m"), "rule in the panel frame pink");
+		assert.ok(lines[1].includes("\x1b[38;2;69;69;69m"), "rule in the panel frame gray");
 	}
 	assert.deepEqual(renderNarrowHeader(model, 0), []);
 });

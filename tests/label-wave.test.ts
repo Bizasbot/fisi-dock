@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWaveClock, WAVE_STEP_MS, waveLabel, wavePetal } from "../lib/label-wave.ts";
+import { createWaveClock, WAVE_STEP_MS, WAVE_STILL_AT, waveLabel, wavePetal } from "../lib/label-wave.ts";
 import { fgCode, palette, vivid } from "../lib/palette.ts";
 import { boxPromptRows, PROMPT_OWNER, wrapPromptFactory } from "../lib/prompt-box.ts";
 import { visibleWidth } from "../lib/text.ts";
@@ -275,4 +275,81 @@ test("S97 potato (no clock) and an idle label keep Gentle Shell's own petal", ()
 	assert.ok(potato.rows[0].includes(gentlePetal(2)), "Gentle Shell's petal as it painted it");
 	const quiet = boxPromptRows(idle(76, "waiting for input"), 80, 0, LABELS, WAVE_STEP_MS);
 	assert.ok(quiet.rows[0].includes("\x1b[35m✿\x1b[39m"), "idle: Gentle Shell's still petal");
+});
+
+// Look settings S4, S6: soft turns the petal in the theme's pastels of before 0.3.0; no mode is vivid, byte for byte.
+test("S4 soft colors: the petal in the pastel tones, the wave unchanged; omitting the mode equals vivid (S6)", () => {
+	const tones = [palette.deepPink, palette.lilac, palette.pink, palette.pink, palette.pink, palette.lilac, palette.deepPink, palette.deepPink];
+	for (let step = 0; step < 16; step++) {
+		const at = step * WAVE_STEP_MS + 5;
+		const soft = wavePetal(at, "soft");
+		assert.equal(soft, `${fgCode(tones[step % 8])}\x1b[1m${plain(soft)}\x1b[22m\x1b[39m`, `step ${step}`);
+		assert.equal(plain(soft), plain(wavePetal(at)), "the same flower");
+		assert.equal(wavePetal(at), wavePetal(at, "vivid"));
+	}
+	// The wave already passes in pastel in vivid (0.3.1): soft paints it the same.
+	assert.equal(waveLabel("ODD checking…", WAVE_STEP_MS * 5), waveLabel("ODD checking…", WAVE_STEP_MS * 5));
+});
+
+test("look-more S2 motion off: the clock paints one fixed moment, starts no timer and stops a running one; the label and petal stand still", () => {
+	const { state, clock } = fakeClockStill();
+	state.still = true;
+	assert.equal(clock.at(), WAVE_STILL_AT);
+	state.now += 777;
+	assert.equal(clock.at(), WAVE_STILL_AT, "the clock does not move it");
+	clock.report(true);
+	assert.equal(state.tick, undefined, "no timer while motion is off");
+	state.still = false;
+	assert.equal(clock.at(), state.now, "motion on again: the clock");
+	clock.report(true);
+	assert.ok(state.tick, "and the timer starts with the next scan");
+	state.still = true;
+	state.tick!();
+	assert.equal(state.tick, undefined, "motion off stops a running timer at its next tick");
+	assert.equal(state.renders, 0, "without asking for a frame");
+	// The fixed moment: the label all muted and the first petal, the same at every clock.
+	const words = "exploring…";
+	assert.equal(waveLabel(words, WAVE_STILL_AT), Array.from(words).map((char) => `${fgCode(palette.muted)}${char}\x1b[39m`).join(""));
+	assert.equal(wavePetal(WAVE_STILL_AT), wavePetal(0));
+	clock.dispose();
+});
+
+function fakeClockStill() {
+	const state = { now: 1000, renders: 0, tick: undefined as (() => void) | undefined, still: false };
+	const clock = createWaveClock({
+		now: () => state.now,
+		motion: () => "quality",
+		still: () => state.still,
+		requestRender: () => void state.renders++,
+		setInterval: (tick) => ((state.tick = tick), 1),
+		clearInterval: () => void (state.tick = undefined),
+	});
+	return { state, clock };
+}
+
+// look-more S4, S7: the wave head and the petal's pink tones follow the accent; lilac stays lilac; omitting it is pink.
+test("look-more S4 the wave head in the accent's base tone and the petal's pink tones on the accent; lilac stays; omitting the accent is pink (S7)", async () => {
+	const { accentBase, accentLabel, accentTone, labelAccent } = await import("../lib/palette.ts");
+	const label = "ODD checking…";
+	for (let step = 0; step < 16; step++) {
+		const at = step * WAVE_STEP_MS + 5;
+		assert.equal(waveLabel(label, at, "pink"), waveLabel(label, at), `step ${step}: pink wave`);
+		for (const colors of ["vivid", "soft"] as const) assert.equal(wavePetal(at, colors, "pink"), wavePetal(at, colors), `step ${step} ${colors}: pink petal`);
+	}
+	for (const accent of ["teal", "lilac", "amber", "green"] as const) {
+		const wave = waveLabel(label, WAVE_STEP_MS * 6, accent);
+		assert.equal(plain(wave), label);
+		assert.ok(wave.includes(fgCode(accentBase(accent))), `${accent}: the head`);
+		assert.ok(!wave.includes(fgCode(palette.pink)), `${accent}: no pink head`);
+		assert.equal(wave.replaceAll(fgCode(accentBase(accent)), fgCode(palette.pink)), waveLabel(label, WAVE_STEP_MS * 6), `${accent}: only the head's color changes`);
+		for (const colors of ["vivid", "soft"] as const) {
+			const deep = accentTone(labelAccent(palette.deepPink, colors), accent, colors);
+			const tones = [deep, labelAccent(palette.lilac, colors), accentLabel(accent, colors), accentLabel(accent, colors), accentLabel(accent, colors), labelAccent(palette.lilac, colors), deep, deep];
+			for (let step = 0; step < 8; step++) {
+				const at = step * WAVE_STEP_MS + 5;
+				const petal = wavePetal(at, colors, accent);
+				assert.equal(petal, `${fgCode(tones[step])}\x1b[1m${plain(petal)}\x1b[22m\x1b[39m`, `${accent} ${colors} step ${step}`);
+			}
+		}
+	}
 });

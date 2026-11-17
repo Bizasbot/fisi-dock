@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { type Look, normalizeLook } from "./look.ts";
 
 /**
  * Where `/fisi-dock on|off` is remembered across restarts (S95): Pi's agent dir
@@ -34,15 +35,25 @@ export function readDockThemeApplied(path: string): boolean {
 	return readState(path)?.themeApplied === true;
 }
 
+/** The look picked in `/fisi-dock settings` (S5); each missing or bad field is the default (S6). */
+export function readDockLook(path: string): Look {
+	return normalizeLook(readState(path)?.look);
+}
+
 /**
- * Saves `{ "enabled": …, "theme": …, "themeApplied": true }` (no theme key without one, no
- * themeApplied key unless true), creating its folder. False when it could not be written.
+ * Writes `fields` over what the file already holds (S5), so each writer keeps the others'
+ * keys; `undefined` drops a key. A missing or malformed file starts empty. False when it
+ * could not be written.
  */
-export function writeDockEnabled(path: string, enabled: boolean, theme?: string, themeApplied = false): boolean {
+function mergeState(path: string, fields: Record<string, unknown>): boolean {
 	try {
-		const mcpExpanded = readState(path)?.mcpExpanded;
 		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ enabled, ...(theme ? { theme } : {}), ...(themeApplied ? { themeApplied } : {}), ...(mcpExpanded !== undefined ? { mcpExpanded } : {}) })}\n`);
+		const state: Record<string, unknown> = { ...readState(path) };
+		for (const [key, value] of Object.entries(fields)) {
+			if (value === undefined) delete state[key];
+			else state[key] = value;
+		}
+		writeFileSync(path, `${JSON.stringify(state)}\n`);
 		return true;
 	} catch {
 		return false;
@@ -54,15 +65,21 @@ export function readMcpExpanded(path: string): boolean {
 	return readState(path)?.mcpExpanded === true;
 }
 
-/** Saves the MCP dropdown state `{ "mcpExpanded": … }` preserving existing state properties. */
+/** Saves the MCP dropdown state `{ "mcpExpanded": … }`, keeping the rest of the file (enabled, theme, look). */
 export function writeMcpExpanded(path: string, mcpExpanded: boolean): boolean {
-	try {
-		const current = readState(path) ?? {};
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ ...current, mcpExpanded })}\n`);
-		return true;
-	} catch {
-		return false;
-	}
+	return mergeState(path, { mcpExpanded });
 }
 
+/** Saves the look under `"look"`, keeping the rest of the file. False when it could not be written. */
+export function writeDockLook(path: string, look: Look): boolean {
+	return mergeState(path, { look: normalizeLook(look) });
+}
+
+/**
+ * Saves `{ "enabled": …, "theme": …, "themeApplied": true }` (no theme key without one, no
+ * themeApplied key unless true), creating its folder and keeping the look (S5). False when
+ * it could not be written.
+ */
+export function writeDockEnabled(path: string, enabled: boolean, theme?: string, themeApplied = false): boolean {
+	return mergeState(path, { enabled, theme: theme || undefined, themeApplied: themeApplied || undefined });
+}

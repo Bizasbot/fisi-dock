@@ -2,7 +2,7 @@ import { ciRunning, ciView, type CiRuns } from "./ci.ts";
 import { entranceSteps } from "./entrance.ts";
 import { headsUpWarnings, type PlanInfo } from "./heads-up.ts";
 import { SHIMMER_STEP_MS } from "./orbs.ts";
-import type { AgentInfo, ChangeInfo, McpServerInfo, MemoryInfo, OddInfo, PamcInfo, PanelModel, SessionInfo, TodoInfo, TodoTask } from "./panel-model.ts";
+import type { AgentInfo, ChangeInfo, McpServerInfo, MemoryInfo, OddInfo, PamcInfo, PanelModel, SessionInfo, SkillInfo, TodoInfo, TodoTask } from "./panel-model.ts";
 import { rddLabel } from "./panel.ts";
 import { rddLive, rddView, type RddRow } from "./rdd.ts";
 
@@ -304,6 +304,12 @@ export interface LiveParts {
 	memory?: MemoryInfo;
 	/** Shell-PAMC / CLIProxyAPI synced accounts and currently used account (lib/pamc.ts). */
 	pamc?: PamcInfo;
+	/** The skills Pi loaded (skills-view S4, lib/skills.ts); undefined while Pi's command list cannot be read. */
+	skills?: SkillInfo[];
+	/** /skills unfolded the skills row (S2). */
+	skillsOpen?: boolean;
+	/** The shortcut that toggles the skills row (S7); undefined when Pi has no registerShortcut. */
+	skillsKey?: string;
 	/** The running spinner's frame from the wall clock (S31); drawn only while something runs. */
 	spinner?: number;
 }
@@ -427,6 +433,7 @@ function snapshotOf(parts: LiveParts, now: number): PanelModel {
 		...(parts.mcp ? { mcp: parts.mcp } : {}),
 		...(parts.memory ? { memory: parts.memory } : {}),
 		...(parts.pamc ? { pamc: parts.pamc } : {}),
+		...(parts.skills ? { skills: { list: parts.skills, ...(parts.skillsOpen ? { open: true } : {}), ...(parts.skillsKey ? { key: parts.skillsKey } : {}) } } : {}),
 	};
 	const todo = parts.todo;
 	const openTodo = todo ? todo.more + (todo.active !== undefined ? 1 : 0) + (todo.next !== undefined ? 1 : 0) : 0;

@@ -6,12 +6,15 @@
 // the passing color stays calm inside the box (vivid labels S3, L9).
 // Only while Gentle Shell itself scans, in quality and performance (S93: there
 // Gentle Shell steps its wave once a second).
-// The petal before the label turns on the same clock (S97).
+// The petal before the label turns on the same clock (S97). With motion off (look-more
+// S2) both stand still on the moment WAVE_STILL_AT. The head and the petal's pink tones
+// take the accent (look-more S4); its lilac tones stay. Light colors paint both for a light
+// background (look-more S5).
 import type { OrbMotion } from "./orbs.ts";
-import { bold, fg, palette, vivid } from "./palette.ts";
+import type { Accent, ColorMode } from "./look.ts";
+import { accentBase, accentLabel, accentTone, bold, fg, labelAccent, paint, palette, type Rgb } from "./palette.ts";
 
 export const WAVE_STEP_MS = 120;
-const WAVE_HEAD = palette.pink;
 const WAVE_SOFT = palette.lilac;
 /** Gentle Shell's wave enters three columns before the label; a short label rests between sweeps. */
 const ENTRY_STEPS = 3;
@@ -19,40 +22,61 @@ const MIN_STEPS = 15;
 /** Gentle Shell repaints a silent working phase once a second, so a frame always arrives within this while the editor is drawn. */
 const FRAME_WINDOW_MS = 2000;
 
-/** `label` with the wave at the moment `now`. */
-export function waveLabel(label: string, now: number): string {
+/** The fixed moment motion off paints (look-more S2): the wave not yet on the label, all muted, and the first petal. */
+export const WAVE_STILL_AT = 0;
+
+/** `label` with the wave at the moment `now`, its head in `accent`'s pastel (pink by default); light `colors` paints it for a light background. */
+export function waveLabel(label: string, now: number, accent: Accent = "pink", colors?: ColorMode): string {
+	const head = accentBase(accent);
 	const chars = Array.from(label);
 	const steps = Math.max(MIN_STEPS, chars.length + ENTRY_STEPS * 2);
-	const head = (Math.floor(now / WAVE_STEP_MS) % steps) - ENTRY_STEPS;
+	const at = (Math.floor(now / WAVE_STEP_MS) % steps) - ENTRY_STEPS;
 	return chars
 		.map((char, index) => {
-			const distance = Math.abs(head - index);
-			return fg(distance <= 1 ? WAVE_HEAD : distance === 2 ? WAVE_SOFT : palette.muted, char);
+			const distance = Math.abs(at - index);
+			return paint(fg(distance <= 1 ? head : distance === 2 ? WAVE_SOFT : palette.muted, char), colors);
 		})
 		.join("");
 }
 
 /** Gentle Shell's working petal (lib/shell-prompt.ts PETAL_FRAMES): four flowers, one column each. */
 const PETAL_FRAMES = ["✿", "❀", "❁", "✾"] as const;
-/** Its tones (PETAL_TONE_FRAMES: mdQuoteBorder, thinkingHigh, accent, borderAccent, accent, thinkingHigh, mdQuoteBorder twice) in the Fisi-Dock theme's vivid colors. */
-const PETAL_TONES = [palette.deepPink, palette.lilac, palette.pink, palette.pink, palette.pink, palette.lilac, palette.deepPink, palette.deepPink].map(vivid);
+/**
+ * Its tones (PETAL_TONE_FRAMES: mdQuoteBorder, thinkingHigh, accent, borderAccent, accent, thinkingHigh,
+ * mdQuoteBorder twice) in the colors of the Fisi Dock theme for color mode `mode` (look settings S4)
+ * and `accent` (look-more S4): the vivid theme's or the soft pastels, deepPink and pink on the accent.
+ */
+function petalTones(mode: ColorMode, accent: Accent): Rgb[] {
+	const deep = accentTone(labelAccent(palette.deepPink, mode), accent, mode);
+	const pink = accentLabel(accent, mode);
+	const lilac = labelAccent(palette.lilac, mode);
+	return [deep, lilac, pink, pink, pink, lilac, deep, deep];
+}
 
-/** Gentle Shell's working petal at the moment `now`. Gentle Shell turns the petal and the wave on one tick, so one frame per wave step. */
-export function wavePetal(now: number): string {
+const PETAL_TONES = new Map<string, Rgb[]>();
+
+/** Gentle Shell's working petal at the moment `now`, in `colors` (vivid by default) and `accent` (pink by default). Gentle Shell turns the petal and the wave on one tick, so one frame per wave step. */
+export function wavePetal(now: number, colors: ColorMode = "vivid", accent: Accent = "pink"): string {
 	const step = Math.floor(now / WAVE_STEP_MS);
-	return fg(PETAL_TONES[step % PETAL_TONES.length], bold(PETAL_FRAMES[step % PETAL_FRAMES.length]));
+	const mode = colors === "soft" ? "soft" : "vivid";
+	const key = `${mode}/${accent}`;
+	const tones = PETAL_TONES.get(key) ?? petalTones(mode, accent);
+	PETAL_TONES.set(key, tones);
+	return paint(fg(tones[step % tones.length], bold(PETAL_FRAMES[step % PETAL_FRAMES.length])), colors);
 }
 
 export interface WaveClockOptions {
 	now(): number;
 	motion(): OrbMotion;
+	/** True while Fisi Dock's motion is off (look-more S2), read per frame: one fixed moment and no timer. */
+	still?(): boolean;
 	requestRender(): void;
 	setInterval?(tick: () => void, ms: number): unknown;
 	clearInterval?(handle: unknown): void;
 }
 
 export interface WaveClock {
-	/** The moment to paint the wave at; undefined leaves Gentle Shell's own label (potato). */
+	/** The moment to paint the wave at; WAVE_STILL_AT with motion off; undefined leaves Gentle Shell's own label (potato). */
 	at(): number | undefined;
 	/** After each frame: whether its label scans. Starts and stops the timer. */
 	report(scanning: boolean): void;
@@ -60,7 +84,8 @@ export interface WaveClock {
 }
 
 /**
- * A timer only while a scanning label is drawn, never in potato motion. The
+ * A timer only while a scanning label is drawn, never in potato motion or with
+ * Fisi Dock's motion off, which stops a running one at its next tick. The
  * motion setting is a file, so it is read when a scan starts, never per frame.
  * When no frame reports for FRAME_WINDOW_MS (the editor is not being drawn) it stops
  * asking for frames; the next reported scan starts it again.
@@ -88,8 +113,15 @@ export function createWaveClock(options: WaveClockOptions): WaveClock {
 		if (timer !== undefined) stopTimer(timer);
 		timer = undefined;
 	};
+	const still = () => {
+		try {
+			return options.still?.() === true;
+		} catch {
+			return false;
+		}
+	};
 	return {
-		at: () => (motion === "potato" ? undefined : options.now()),
+		at: () => (still() ? WAVE_STILL_AT : motion === "potato" ? undefined : options.now()),
 		report(next) {
 			if (disposed) return;
 			if (!next) {
@@ -100,9 +132,9 @@ export function createWaveClock(options: WaveClockOptions): WaveClock {
 			lastFrame = options.now();
 			if (!scanning) motion = readMotion();
 			scanning = true;
-			if (timer !== undefined || motion === "potato") return;
+			if (timer !== undefined || motion === "potato" || still()) return;
 			timer = startTimer(() => {
-				if (options.now() - lastFrame > FRAME_WINDOW_MS) return stop();
+				if (still() || options.now() - lastFrame > FRAME_WINDOW_MS) return stop();
 				options.requestRender();
 			}, WAVE_STEP_MS);
 		},

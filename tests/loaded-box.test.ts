@@ -31,9 +31,9 @@ test("S1 the loaded box at 100 columns: the card's 63-column frame, centered, `l
 	]);
 });
 
-test("S1 the box paints with the card's palette roles: gentleman pink frame, muted kinds, title and hint, text counts", () => {
+test("S1 the box paints with the card's palette roles: gray frame, muted kinds, title and hint, text counts", () => {
 	const [top, row, , , bottom] = renderLoadedBox(KINDS, 63);
-	const frame = "\x1b[38;2;244;56;136m";
+	const frame = "\x1b[38;2;69;69;69m";
 	const muted = "\x1b[38;2;108;108;108m";
 	const text = "\x1b[38;2;225;225;225m";
 	assert.ok(top.startsWith(`${frame}╭─ `) && top.includes(`${muted}loaded`), JSON.stringify(top));

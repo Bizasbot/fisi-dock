@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ellipsize, truncateToWidth, visibleWidth } from "../lib/text.ts";
+import { ellipsize, fitWidth, padEnd, sliceColumns, truncateToWidth, visibleWidth } from "../lib/text.ts";
 
 test("visibleWidth ignores ANSI escapes and counts wide characters as 2", () => {
 	assert.equal(visibleWidth("\x1b[1mabc\x1b[0m"), 3);
@@ -29,4 +29,37 @@ test("ellipsize cuts with … only when the text is too wide", () => {
 	const styled = ellipsize("\x1b[31mhello world\x1b[39m", 6);
 	assert.equal(visibleWidth(styled), 6);
 	assert.ok(styled.endsWith("…"));
+});
+
+test("only a whole CSI, OSC, APC, DCS, PM or SOS sequence takes no column; a broken one is drawn as text", () => {
+	assert.equal(visibleWidth("\x1b[?25hab"), 2, "CSI with a private parameter");
+	assert.equal(visibleWidth("\x1b[ qab"), 2, "CSI with an intermediate byte");
+	assert.equal(visibleWidth("\x1b["), 1, "CSI cut after its opener: the bracket shows");
+	assert.equal(visibleWidth("\x1b[31"), 3, "CSI without a final byte");
+	assert.equal(visibleWidth("\x1b]unterminated"), 13, "OSC that never ends");
+	assert.equal(visibleWidth("\x1b]a\x1bb"), 3, "OSC broken by an ESC that is not ST");
+	assert.equal(visibleWidth("\x1bXsos\x1b\\z"), 1, "SOS ended by ST");
+	assert.equal(visibleWidth("\x1b^pm\x07z"), 1, "PM ended by BEL");
+	assert.equal(visibleWidth("\x1bc"), 1, "an escape outside those families");
+	assert.equal(visibleWidth("\x1b"), 0, "a lone ESC");
+	assert.equal(truncateToWidth("\x1b[31mab\x1b[39mcd", 3), "\x1b[31mab\x1b[39mc\x1b[0m");
+	assert.equal(truncateToWidth("\x1b[31", 2), "\x1b[3");
+	assert.equal(sliceColumns("\x1b[31mabcd\x1b[39m", 1, 3), "\x1b[31mbc\x1b[0m");
+	assert.equal(sliceColumns("a日b", 1, 2), "", "a wide character astride the edge is left out");
+});
+
+test("fitWidth gives exactly the width: padded when the text fits, cut with … when it does not, as padEnd(ellipsize()) does", () => {
+	assert.equal(fitWidth("abc", 6), "abc   ");
+	assert.equal(fitWidth("abcdef", 6), "abcdef");
+	assert.equal(fitWidth("abcdefgh", 6), "abcde…");
+	assert.equal(fitWidth("日本語", 5), "日本…");
+	assert.equal(fitWidth("日本語", 4), "日… ", "a wide character that does not fit leaves a column to pad");
+	assert.equal(fitWidth("\x1b[31mab\x1b[39m", 4), "\x1b[31mab\x1b[39m  ", "escapes take no column");
+	assert.equal(fitWidth("\x1b[31mabcdef\x1b[39m", 4), "\x1b[31mabc\x1b[0m…");
+	assert.equal(fitWidth("abc", 0), "");
+	assert.equal(fitWidth("abc", -2), "");
+	assert.equal(fitWidth("", 3), "   ");
+	for (const text of ["", "abc", "abcdefgh", "日本語テキスト", "\x1b[1mbold\x1b[22m tail", "e\u0301 mark"]) {
+		for (let width = -1; width <= 12; width++) assert.equal(fitWidth(text, width), padEnd(ellipsize(text, width), width), `${JSON.stringify(text)} at ${width}`);
+	}
 });

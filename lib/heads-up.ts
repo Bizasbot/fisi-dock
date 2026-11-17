@@ -170,6 +170,94 @@ async function gitOutput(exec: GitExec, args: string[]): Promise<string | undefi
 	}
 }
 
+const MAX_SQUASH_CHECKS = 20;
+const MAX_SQUASH_VERDICTS = 256;
+
+const firstLine = (stdout: string | undefined) => stdout?.split(/\r?\n/, 1)[0].trim() || undefined;
+
+/**
+ * Remembered merge-tree verdicts (S3): true when the branch is already merged.
+ * Keyed by target, target tree, branch and branch tip, so a verdict stands
+ * until the branch or the default branch changes. The least recently used
+ * entry is dropped past 256.
+ */
+const squashVerdicts = new Map<string, boolean>();
+
+/** Forgets every remembered verdict (tests). */
+export function forgetSquashVerdicts(): void {
+	squashVerdicts.clear();
+}
+
+function recallVerdict(key: string): boolean | undefined {
+	const verdict = squashVerdicts.get(key);
+	if (verdict === undefined) return undefined;
+	squashVerdicts.delete(key);
+	squashVerdicts.set(key, verdict);
+	return verdict;
+}
+
+function rememberVerdict(key: string, verdict: boolean): void {
+	squashVerdicts.delete(key);
+	squashVerdicts.set(key, verdict);
+	while (squashVerdicts.size > MAX_SQUASH_VERDICTS) squashVerdicts.delete(squashVerdicts.keys().next().value!);
+}
+
+/** `git for-each-ref --format=%(refname:short) %(objectname)` lines to branch → tip. */
+function parseBranchTips(stdout: string | undefined): Map<string, string> {
+	const tips = new Map<string, string>();
+	for (const line of (stdout ?? "").split(/\r?\n/)) {
+		const match = /^(\S+) (\S+)$/.exec(line.trim());
+		if (match) tips.set(match[1], match[2]);
+	}
+	return tips;
+}
+
+/**
+ * true when merging `branch` into `target` leaves `targetTree` unchanged,
+ * false when it would change it or conflicts (exit 1 with a tree), undefined
+ * when merge-tree failed (git before 2.38, any other exit, a throw).
+ */
+async function mergeVerdict(exec: GitExec, target: string, branch: string, targetTree: string): Promise<boolean | undefined> {
+	try {
+		const result = await exec(["merge-tree", "--write-tree", target, branch]);
+		const tree = firstLine(result.stdout);
+		if (result.code === 0 && tree !== undefined) return tree === targetTree;
+		return result.code === 1 && tree !== undefined ? false : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The branches whose changes are not in `target` yet. A branch merged by squash
+ * or rebase is not an ancestor of `target`, so `--no-merged` still lists it;
+ * merging it into `target` leaves `target`'s tree unchanged, which is how it is
+ * recognized. A conflict, a failed merge-tree (git before 2.38) or an
+ * unreadable target tree keeps the branch listed; at most 20 merge-trees run
+ * per read. Verdicts are remembered per branch tip and target tree (S3);
+ * failures and branches whose tip cannot be read are not.
+ */
+async function withoutSquashMerged(exec: GitExec, target: string, branches: string[]): Promise<string[]> {
+	if (branches.length === 0) return branches;
+	const targetTree = firstLine(await gitOutput(exec, ["rev-parse", `${target}^{tree}`]));
+	if (targetTree === undefined) return branches;
+	const tips = parseBranchTips(await gitOutput(exec, ["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"]));
+	const kept: string[] = [];
+	let checks = 0;
+	for (const name of branches) {
+		const tip = tips.get(name);
+		const key = tip === undefined ? undefined : JSON.stringify([target, targetTree, name, tip]);
+		let merged = key === undefined ? undefined : recallVerdict(key);
+		if (merged === undefined && checks < MAX_SQUASH_CHECKS) {
+			checks++;
+			merged = await mergeVerdict(exec, target, name, targetTree);
+			if (merged !== undefined && key !== undefined) rememberVerdict(key, merged);
+		}
+		if (merged !== true) kept.push(name);
+	}
+	return kept;
+}
+
 /** Other worktrees and local branches not merged into the default branch; each omitted when unreadable. */
 export async function readHeadsUpGit(exec: GitExec, cwd: string, branch: string | undefined): Promise<{ worktrees?: string[]; unmerged?: string[] }> {
 	const porcelain = await gitOutput(exec, ["worktree", "list", "--porcelain"]);
@@ -184,7 +272,8 @@ export async function readHeadsUpGit(exec: GitExec, cwd: string, branch: string 
 		target = defaultBranchFrom(undefined, hasMain, !hasMain && (await exists("refs/heads/master")));
 	}
 	const list = target === undefined ? undefined : await gitOutput(exec, ["branch", "--format=%(refname:short)", "--no-merged", target]);
-	return { worktrees, unmerged: list === undefined ? undefined : parseBranchList(list, branch) };
+	if (target === undefined || list === undefined) return { worktrees, unmerged: undefined };
+	return { worktrees, unmerged: await withoutSquashMerged(exec, target, parseBranchList(list, branch)) };
 }
 
 // --- warnings ----------------------------------------------------------------

@@ -2,12 +2,14 @@ import "./helpers/palette-default.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { samplePanelModel, type PanelModel } from "../lib/panel-model.ts";
-import { DOCK_MAX_WIDTH, DOCK_TOP_ROWS, DOCK_WIDTH, formatElapsed, formatEstimate, panelDigest, renderAgentsCard, renderDock, renderPanel, renderTodoCard } from "../lib/panel.ts";
+import { DOCK_MAX_WIDTH, DOCK_TOP_ROWS, DOCK_WIDTH, formatElapsed, formatEstimate, panelDigest, renderAgentsCard, renderDock, renderPanel, renderRail, renderTodoCard } from "../lib/panel.ts";
 import { bgCode, fgCode, palette, panelVivid } from "../lib/palette.ts";
 import { visibleWidth } from "../lib/text.ts";
 
 const plain = (line: string) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 const clone = (model: PanelModel): PanelModel => structuredClone(model);
+/** `line` with the color left off every span of frame glyphs (the rail fades its frames, the narrow cards keep them flat). */
+const frameless = (line: string) => line.replace(/\x1b\[38;2;\d+;\d+;\d+m([╭╮╰╯─│ ]+)\x1b\[39m/g, "$1");
 
 const longModel: PanelModel = {
 	session: {
@@ -102,13 +104,11 @@ test("sample sections show design 07 content", () => {
 	const lines = renderPanel(samplePanelModel, 47).map(plain);
 	const session = sectionBody(lines, "session");
 	assert.deepEqual(session.map((line) => line.replace(/ +│$/, "").replace(/(?<=context  )[▰▱]+/, "<meter>")), [
-		"│ where ──",
 		"│ project  my-sample-app  main ↑1",
-		"│ usage ──",
 		"│ context  <meter> 6% · 12.1k/200k",
 		"│ profile  claude                      $0.000",
 	]);
-	assert.match(session[3], /^│ context  [▰▱]{18} 6% · 12\.1k\/200k │$/);
+	assert.match(session[1], /^│ context  [▰▱]{18} 6% · 12\.1k\/200k │$/);
 	assert.ok(lines.find((line) => line.startsWith("╭─ todo"))!.includes(" 3/7 ─╮"));
 	assert.deepEqual(sectionBody(lines, "agents").map((line) => line.replace(/ +│$/, "")), ["│ ✓ explore Map CI workflow", "│ ⠹ verify Check PR 265 checks"]);
 	const changes = sectionBody(lines, "changes");
@@ -232,7 +232,7 @@ test("session cost row: `cost` on the left with the dollars, no review text nor 
 
 test("the cost row sits in session after the context row and fits every rail width", () => {
 	const lines = renderPanel({ session: { project: "p", contextPercent: 5, tokensUsed: 53_500, tokensMax: 1_000_000 }, footer: { cost: 0.012, rdd: "on" } }, 47).map(plain);
-	assert.deepEqual(sectionBody(lines, "session").map((line) => line.replace(/ +/g, " ")), ["│ where ── │", "│ project p │", "│ usage ── │", `│ context ▰${"▱".repeat(19)} 5% · 53.5k/1M │`, "│ cost $0.012 │"]);
+	assert.deepEqual(sectionBody(lines, "session").map((line) => line.replace(/ +/g, " ")), ["│ project p │", `│ context ▰${"▱".repeat(19)} 5% · 53.5k/1M │`, "│ cost $0.012 │"]);
 	for (const width of [58, 55, 47, 30, 20, 12, 5, 1]) {
 		for (const line of renderPanel({ session: { project: "p" }, footer: { cost: 123.456, rdd: "off", review: "Reviewers running…" } }, width)) assert.ok(visibleWidth(line) <= width, `width ${width}`);
 	}
@@ -445,7 +445,7 @@ test("RDD rows fit 47, 30 and 20 columns, the watching row included (S50)", () =
 test("session profile row: Gentle Shell's label with the cost flush right; without a profile the cost keeps its own row (S99)", () => {
 	const session = (profile?: string) => sectionBody(renderPanel({ session: { project: "p", contextPercent: 40, ...(profile ? { profile } : {}) }, footer: { cost: 0.012 } }, 47), "session");
 	const rows = session("claude (session)");
-	assert.match(rows[4], /^│ profile  claude \(session\) +\$0\.012 │$/);
+	assert.match(rows[2], /^│ profile  claude \(session\) +\$0\.012 │$/);
 	assert.ok(!rows.some((line) => line.startsWith("│ cost")), "the cost rides the profile row");
 	assert.ok(!session().some((line) => line.includes("profile")), "no profile, no profile row");
 	assert.match(session().at(-1)!, /^│ cost +\$0\.012 +│$/);
@@ -497,24 +497,18 @@ const sessionRow = (box: string[], start: string) => box.find((line) => plain(li
 const ARTBOARD: Record<string, string[]> = {
 	"a@55": [
 		"╭─ session ───────────────────────────────────────────╮",
-		"│ where ──                                            │",
 		"│ project  fisi-dock  main                            │",
-		"│ usage ──                                            │",
 		`│ context  ▰${"▱".repeat(27)} 5% · 53.5k/1M │`,
 		"│ profile  claude                              $0.127 │",
-		"│ connections ──                                      │",
 		"│ memory   ● engram  connected · 3 saved              │",
 		"│ mcp      none configured                            │",
 		"╰─────────────────────────────────────────────────────╯",
 	],
 	"b@55": [
 		"╭─ session ───────────────────────────────────────────╮",
-		"│ where ──                                            │",
 		"│ project  fisi-dock  main ↑2                         │",
-		"│ usage ──                                            │",
 		`│ context  ▰${"▱".repeat(27)} 5% · 53.5k/1M │`,
 		"│ profile  claude                              $0.127 │",
-		"│ connections ──                                      │",
 		"│ memory   ● engram    connected · 3 saved            │",
 		"│ mcp      ● context7  connected                      │",
 		"│          ◌ github    connecting                     │",
@@ -523,60 +517,45 @@ const ARTBOARD: Record<string, string[]> = {
 	],
 	"c@55": [
 		"╭─ session ───────────────────────────────────────────╮",
-		"│ where ──                                            │",
 		"│ project  fisi-dock  main                            │",
-		"│ usage ──                                            │",
 		`│ context  ▰${"▱".repeat(27)} 5% · 53.5k/1M │`,
 		"│ profile  claude                              $0.127 │",
-		"│ connections ──                                      │",
 		"│ memory   ✗ engram  unreachable                      │",
 		"│ mcp      none configured                            │",
 		"╰─────────────────────────────────────────────────────╯",
 	],
 	"d@55": [
 		"╭─ session ───────────────────────────────────────────╮",
-		"│ where ──                                            │",
 		"│ project  fisi-dock  main                            │",
-		"│ usage ──                                            │",
 		`│ context  ${"▰".repeat(24)}${"▱".repeat(4)} 87% · 870k/1M │`,
 		"│ profile  claude                              $0.127 │",
-		"│ connections ──                                      │",
 		"│ memory   ● engram  connected · 3 saved              │",
 		"│ mcp      none configured                            │",
 		"╰─────────────────────────────────────────────────────╯",
 	],
 	"e@55": [
 		"╭─ session ───────────────────────────────────────────╮",
-		"│ where ──                                            │",
 		"│ project  fisi-dock  main                            │",
-		"│ usage ──                                            │",
 		`│ context  ▰${"▱".repeat(27)} 5% · 53.5k/1M │`,
 		"│ profile  claude                              $0.127 │",
-		"│ connections ──                                      │",
 		"│ memory   ○ engram  not installed                    │",
 		"│ mcp      none configured                            │",
 		"╰─────────────────────────────────────────────────────╯",
 	],
 	"a@47": [
 		"╭─ session ───────────────────────────────────╮",
-		"│ where ──                                    │",
 		"│ project  fisi-dock  main                    │",
-		"│ usage ──                                    │",
 		`│ context  ▰${"▱".repeat(19)} 5% · 53.5k/1M │`,
 		"│ profile  claude                      $0.127 │",
-		"│ connections ──                              │",
 		"│ memory   ● engram  connected · 3 saved      │",
 		"│ mcp      none configured                    │",
 		"╰─────────────────────────────────────────────╯",
 	],
 	"b@47": [
 		"╭─ session ───────────────────────────────────╮",
-		"│ where ──                                    │",
 		"│ project  fisi-dock  main ↑2                 │",
-		"│ usage ──                                    │",
 		`│ context  ▰${"▱".repeat(19)} 5% · 53.5k/1M │`,
 		"│ profile  claude                      $0.127 │",
-		"│ connections ──                              │",
 		"│ memory   ● engram    connected · 3 saved    │",
 		"│ mcp      ● context7  connected              │",
 		"│          ◌ github    connecting             │",
@@ -585,62 +564,47 @@ const ARTBOARD: Record<string, string[]> = {
 	],
 	"c@47": [
 		"╭─ session ───────────────────────────────────╮",
-		"│ where ──                                    │",
 		"│ project  fisi-dock  main                    │",
-		"│ usage ──                                    │",
 		`│ context  ▰${"▱".repeat(19)} 5% · 53.5k/1M │`,
 		"│ profile  claude                      $0.127 │",
-		"│ connections ──                              │",
 		"│ memory   ✗ engram  unreachable              │",
 		"│ mcp      none configured                    │",
 		"╰─────────────────────────────────────────────╯",
 	],
 	"d@47": [
 		"╭─ session ───────────────────────────────────╮",
-		"│ where ──                                    │",
 		"│ project  fisi-dock  main                    │",
-		"│ usage ──                                    │",
 		`│ context  ${"▰".repeat(17)}${"▱".repeat(3)} 87% · 870k/1M │`,
 		"│ profile  claude                      $0.127 │",
-		"│ connections ──                              │",
 		"│ memory   ● engram  connected · 3 saved      │",
 		"│ mcp      none configured                    │",
 		"╰─────────────────────────────────────────────╯",
 	],
 	"e@47": [
 		"╭─ session ───────────────────────────────────╮",
-		"│ where ──                                    │",
 		"│ project  fisi-dock  main                    │",
-		"│ usage ──                                    │",
 		`│ context  ▰${"▱".repeat(19)} 5% · 53.5k/1M │`,
 		"│ profile  claude                      $0.127 │",
-		"│ connections ──                              │",
 		"│ memory   ○ engram  not installed            │",
 		"│ mcp      none configured                    │",
 		"╰─────────────────────────────────────────────╯",
 	],
 	"a@34": [
 		"╭─ session ──────────────────────╮",
-		"│ where ──                       │",
 		"│ project  fisi-dock  main       │",
-		"│ usage ──                       │",
 		`│ context  ▰${"▱".repeat(20)} │`,
 		"│                  5% · 53.5k/1M │",
 		"│ profile  claude         $0.127 │",
-		"│ connections ──                 │",
 		"│ memory   ● engram  connected   │",
 		"│ mcp      none configured       │",
 		"╰────────────────────────────────╯",
 	],
 	"b@34": [
 		"╭─ session ──────────────────────╮",
-		"│ where ──                       │",
 		"│ project  fisi-dock  main ↑2    │",
-		"│ usage ──                       │",
 		`│ context  ▰${"▱".repeat(20)} │`,
 		"│                  5% · 53.5k/1M │",
 		"│ profile  claude         $0.127 │",
-		"│ connections ──                 │",
 		"│ memory   ● engram   connected  │",
 		"│ mcp      ● context7 connected  │",
 		"│          ◌ github   connecting │",
@@ -649,13 +613,10 @@ const ARTBOARD: Record<string, string[]> = {
 	],
 	"c@34": [
 		"╭─ session ──────────────────────╮",
-		"│ where ──                       │",
 		"│ project  fisi-dock  main       │",
-		"│ usage ──                       │",
 		`│ context  ▰${"▱".repeat(20)} │`,
 		"│                  5% · 53.5k/1M │",
 		"│ profile  claude         $0.127 │",
-		"│ connections ──                 │",
 		"│ memory   ✗ engram  unreachable │",
 		"│ mcp      none configured       │",
 		"╰────────────────────────────────╯",
@@ -669,21 +630,17 @@ test("the grouped session section is artboard 02 at 55 and 47 columns, states (a
 	}
 });
 
-test("group labels are muted with a faint ── stub, no full-width rule; keys muted in one column (artboard 02)", () => {
+test("no group label rows, no rule between the groups; keys muted in one column (artboard 02, sidebar-chrome 02)", () => {
 	const box = sessionBox(ART_STATES.b, 47, true);
-	for (const label of ["where", "usage", "connections"]) {
-		const row = sessionRow(box, `│ ${label} ──`);
-		assert.ok(row.includes(`${fgCode(palette.muted)}${label}`), `${label} muted`);
-		assert.ok(row.includes(`${fgCode(palette.faint)} ──`), `${label} faint stub`);
-		assert.match(plain(row), new RegExp(`^│ ${label} ── +│$`), `${label}: a stub, not a rule`);
-	}
+	assert.ok(!box.some((line) => /^ (where|usage|connections)\b|^ ─+ *$/.test(plain(line).slice(1, -1))), "no label rows, stubs or rules inside the box");
+	assert.deepEqual(box.slice(1, -1).map((line) => plain(line).slice(1).trim().split(/ +/)[0]), ["project", "context", "profile", "memory", "mcp", "◌", "✗"], "the groups follow each other directly");
 	for (const key of ["project  ", "context  ", "profile  ", "memory   ", "mcp      "]) assert.ok(sessionRow(box, `│ ${key.trim()}`).includes(`${fgCode(palette.muted)}${key}`), `${key.trim()} key muted`);
 	const where = sessionRow(box, "│ project");
 	assert.ok(where.includes(`\x1b[1m${fgCode(palette.text)}fisi-dock`), "project bold");
 	assert.ok(where.includes(`${fgCode(palette.green)}main ↑2`), "branch and ↑N green");
 	const unpushed = renderPanel({ session: ART_STATES.b, headsUp: [{ kind: "unpushed", text: "2 commits not pushed" }] }, 47).map(plain);
-	assert.match(sectionBody(unpushed, "session")[1], /^│ project  fisi-dock  main +│$/, "the heads-up already says ↑N (S8)");
-	assert.match(sectionBody(renderPanel({ session: { ...ART_SESSION, branch: undefined } }, 47), "session")[1], /^│ project  fisi-dock +│$/, "no branch, no gap");
+	assert.match(sectionBody(unpushed, "session")[0], /^│ project  fisi-dock  main +│$/, "the heads-up already says ↑N (S8)");
+	assert.match(sectionBody(renderPanel({ session: { ...ART_SESSION, branch: undefined } }, 47), "session")[0], /^│ project  fisi-dock +│$/, "no branch, no gap");
 });
 
 test("context meter: filled ▰ with continuous spectrum gradient, empty ▱ in faint slate; the readout bold percent, muted ·, tokens (artboard 02)", () => {
@@ -835,14 +792,14 @@ test("/dock lists every MCP server in config order, no summary (S5)", () => {
 	assert.ok(!lines.some((line) => line.includes("more")), "no summary");
 });
 
-test("short screens: the MCP summary is a session row like any other, so the labels drop when it does not fit (S5, S38)", () => {
+test("short screens: the MCP summary is a session row like any other, so it stays when the panel is a row short (S5, S38)", () => {
 	const model: PanelModel = { session: { ...ART_SESSION, mcp: mcpServers(TEN) } };
 	const full = renderPanel(model, 47);
 	const session = sectionBody(full, "session");
 	assert.equal(session.filter((line) => /^│ (mcp {6}| {9}| {11})[✗+]/.test(line)).length, 4, "3 server rows and the summary");
 	assert.deepEqual(renderPanel(model, 47, { maxRows: full.length }).map(plain), full.map(plain), "exactly enough rows: the full shape");
 	const short = sectionBody(renderPanel(model, 47, { maxRows: full.length - 1 }), "session");
-	assert.ok(!short.some((line) => /(where|usage|connections) ──/.test(line)), "one row short: the group labels go");
+	assert.deepEqual(short, session.map(plain), "one row short: every session row stays (no group labels to drop)");
 	assert.ok(short.at(-1)!.includes("+7 more"), "the summary stays");
 });
 
@@ -855,27 +812,25 @@ test("the user's setup: fisi-dock on main, 5%, 53.5k/1M, claude, $0.127, engram 
 	}
 });
 
-test("one group only: no label row; the labels name groups apart from each other", () => {
+test("no label row with one group or several (sidebar-chrome 02)", () => {
 	assert.deepEqual(sectionBody(renderPanel({ session: { project: "p", branch: "main" } }, 47), "session"), [`│ project  p  main${" ".repeat(27)} │`]);
 	const two = sectionBody(renderPanel({ session: { project: "p" }, footer: { cost: 0.012 } }, 47), "session").map((line) => line.replace(/ +│$/, ""));
-	assert.deepEqual(two, ["│ where ──", "│ project  p", "│ usage ──", "│ cost     $0.012"]);
+	assert.deepEqual(two, ["│ project  p", "│ cost     $0.012"]);
 });
 
-test("short screens drop the session's 3 group labels first, before any spacer row (artboard 02, S34)", () => {
+test("short screens: with no group labels the spacer rows drop first and every session row stays (sidebar-chrome 02, S34)", () => {
 	const model: PanelModel = { session: ART_STATES.b, footer: { cost: 0.127 }, odd: samplePanelModel.odd, changes: samplePanelModel.changes };
 	const full = renderPanel(model, 47).map(plain);
-	const labels = (lines: string[]) => sectionBody(lines, "session").filter((line) => /^│ (where|usage|connections) ──/.test(line));
-	assert.equal(labels(full).length, 3);
-	const noLabels = renderPanel(model, 47, { maxRows: full.length - 1 }).map(plain);
-	assert.equal(noLabels.length, full.length - 3, "the 3 label rows, nothing else");
-	assert.deepEqual(labels(noLabels), []);
-	assert.equal(noLabels.filter(isSpacer).length, full.filter(isSpacer).length, "the ODD spacers stay");
-	assert.deepEqual(sectionBody(noLabels, "session"), sectionBody(full, "session").filter((line) => !labels(full).includes(line)), "every other session row stays");
-	const noSpacers = renderPanel(model, 47, { maxRows: noLabels.length - 1 }).map(plain);
-	assert.ok(!noSpacers.some(isSpacer), "then the spacers");
-	assert.deepEqual(labels(noSpacers), [], "the labels stay out");
-	assert.deepEqual(renderPanel(model, 47, { maxRows: full.length }).map(plain), full, "it fits: labels drawn");
-	assert.deepEqual(labels(renderDock(model, DOCK_WIDTH + 2, 200).lines.map((line) => plain(line).slice(1, -1))).length, 3, "/dock keeps them: it scrolls");
+	const labels = (lines: string[]) => lines.filter((line) => /^│ (where|usage|connections) ──/.test(line));
+	assert.deepEqual(labels(full), []);
+	const spacers = full.filter(isSpacer).length;
+	assert.ok(spacers > 0, "the ODD spacers");
+	const noSpacers = renderPanel(model, 47, { maxRows: full.length - 1 }).map(plain);
+	assert.equal(noSpacers.length, full.length - spacers, "the spacer rows, nothing else");
+	assert.ok(!noSpacers.some(isSpacer), "the spacers go first");
+	assert.deepEqual(sectionBody(noSpacers, "session"), sectionBody(full, "session"), "every session row stays");
+	assert.deepEqual(renderPanel(model, 47, { maxRows: full.length }).map(plain), full, "it fits: spacers drawn");
+	assert.deepEqual(labels(renderDock(model, DOCK_WIDTH + 2, 200).lines.map((line) => plain(line).slice(1, -1))), [], "/dock draws none either");
 });
 
 for (const total of [3, 7, 50]) {
@@ -927,12 +882,14 @@ const eightTasks: PanelModel = {
 	},
 };
 
-test("the todo card is the side panel's todo section, frame and all, at any width (S28, S7)", () => {
+test("the todo card is the side panel's todo section at any width: same rows, styling and geometry; only the frame color differs (S28, S7, sidebar-chrome 02)", () => {
 	for (const width of [55, 47]) {
 		const lines = renderPanel(samplePanelModel, width);
 		const start = lines.findIndex((line) => plain(line).startsWith("╭─ todo"));
 		const end = lines.findIndex((line, index) => index > start && plain(line).startsWith("╰"));
-		assert.deepEqual(renderTodoCard(samplePanelModel.todo, width), lines.slice(start, end + 1), `${width}: byte-identical to the panel`);
+		const card = renderTodoCard(samplePanelModel.todo, width);
+		assert.deepEqual(card.map(frameless), lines.slice(start, end + 1).map(frameless), `${width}: byte-identical to the panel but for the frame color`);
+		assert.notDeepEqual(card, lines.slice(start, end + 1), `${width}: the rail's frame fades, the card's stays flat`);
 	}
 	const card = renderTodoCard(samplePanelModel.todo, 64).map(plain);
 	assert.match(card[0], /^╭─ todo ─+ 3\/7 ─╮$/);
@@ -1078,12 +1035,12 @@ test("the rail's active task keeps the highlight, the spinner frame and the entr
 	const model = todoOf(statesAt(12, 5));
 	const dock = renderPanel(model, 47, { todoExpanded: true });
 	const active = (lines: string[]) => lines.find((line) => plain(line).includes("Task 5"))!;
-	assert.equal(active(renderPanel(model, 47)), active(dock), "same row as /dock");
+	assert.equal(frameless(active(renderPanel(model, 47))), frameless(active(dock)), "same row as /dock but for the side fade, which follows each box's height");
 	assert.ok(plain(active(renderPanel(model, 47))).includes("▎⠹ Task 5"), "spinner frame 2");
 	const entering = clone(model);
 	entering.todo!.entrance = 0;
 	assert.notEqual(active(renderPanel(entering, 47)), active(renderPanel(model, 47)), "entrance changes the row");
-	assert.equal(active(renderPanel(entering, 47)), active(renderPanel(entering, 47, { todoExpanded: true })));
+	assert.equal(frameless(active(renderPanel(entering, 47))), frameless(active(renderPanel(entering, 47, { todoExpanded: true }))));
 });
 
 test("the rail without a task list keeps the summary rows (S58, S7)", () => {
@@ -1167,21 +1124,38 @@ test("section titles are bold in 75% of the vivid version of their own color (vi
 	}
 });
 
-test("every section frame is the gentleman sexy pink; only titles keep their color", () => {
-	const pink = "\x1b[38;2;244;56;136m";
+test("every rail section frame fades the same neutral way whatever its title color; the narrow cards keep the flat neutral gray; only titles keep their color (sidebar-chrome 02)", () => {
+	const gray = fgCode(palette.frame);
 	const model: PanelModel = { ...clone(samplePanelModel), headsUp: [{ kind: "unpushed", text: "1 commit not pushed" }] };
 	const lines = renderPanel(model, 47);
 	const titles = ["session", "heads-up", "todo", "ODD", "agents", "changes"];
+	const neutral = (line: string) => [...line.matchAll(/\x1b\[38;2;(\d+);(\d+);(\d+)m[╭╮╰╯─│]/g)].every((match) => match[1] === match[2] && match[2] === match[3]);
+	const bottoms: number[][] = [];
 	for (const title of titles) {
 		const start = lines.findIndex((line) => plain(line).startsWith(`╭─ ${title}`));
 		assert.ok(start >= 0, title);
-		assert.ok(lines[start].startsWith(`${pink}╭─ `), `${title} top`);
-		let end = start + 1;
-		while (!plain(lines[end]).startsWith("╰")) {
-			assert.ok(lines[end].startsWith(`${pink}│`), `${title} side`);
-			end++;
-		}
-		assert.ok(lines[end].startsWith(`${pink}╰`), `${title} bottom`);
+		const end = lines.findIndex((line, index) => index > start && plain(line).startsWith("╰"));
+		const box = lines.slice(start, end + 1);
+		assert.ok(box.every(neutral), `${title}: every frame glyph a neutral gray`);
+		assert.ok(!box.some((line) => line.includes(`${gray}╭`) || line.includes(`${gray}│`) || line.includes(`${gray}╰`)), `${title}: no flat frame color`);
+		const [topLeft] = frameLight(box[0], "╭");
+		const [topRight] = frameLight(box[0], "╮");
+		const bottom = frameLight(box.at(-1)!, "╰─╯");
+		assert.ok(topLeft <= 0x18 && topRight <= 0x18 && bottom[0] <= 0x18 && bottom.at(-1)! <= 0x18, `${title}: corners in the background`);
+		assert.deepEqual(bottom, [...bottom].reverse(), `${title}: bottom symmetric`);
+		const left = box.slice(1, -1).map((line) => Number(/^\x1b\[38;2;(\d+);\d+;\d+m│/.exec(line)![1]));
+		const right = box.slice(1, -1).map((line) => Number(/\x1b\[38;2;(\d+);\d+;\d+m│\x1b\[39m$/.exec(line)![1]));
+		assert.deepEqual(left, [...left].reverse(), `${title}: sides symmetric`);
+		assert.deepEqual(right, left, `${title}: both sides alike`);
+		bottoms.push(bottom);
+	}
+	for (const bottom of bottoms) assert.deepEqual(bottom, bottoms[0], "the same fade on every section");
+	const cards = [renderTodoCard(model.todo, 47), renderAgentsCard(model.agents, 47, 1, 0)];
+	for (const card of cards) {
+		assert.ok(card.length >= 3);
+		assert.ok(card[0].startsWith(`${gray}╭─ `), `card top: ${JSON.stringify(card[0])}`);
+		for (const line of card.slice(1, -1)) assert.ok(line.startsWith(`${gray}│`), "card side");
+		assert.ok(card.at(-1)!.startsWith(`${gray}╰`), "card bottom");
 	}
 });
 
@@ -1692,15 +1666,12 @@ test("short screens keep the logo, session, heads-up, ODD, todo and agents; drop
 	assert.equal(spacers, 4, "three odd spacers and one rdd spacer");
 	const has = (lines: string[], title: string) => lines.some((line) => line.startsWith(`╭─ ${title}`));
 
-	// (0) The session's group labels go first (artboard 02): where and usage here.
-	const noLabels = renderPanel(model, 58, { maxRows: full.length - 1 }).map(plain);
-	assert.equal(noLabels.length, full.length - 2);
-	assert.ok(!noLabels.some((line) => /^│ (where|usage|connections) ──/.test(line)), "no group labels");
-	assert.equal(noLabels.filter(isSpacer).length, spacers, "spacers kept");
+	// The session has no group labels to drop (sidebar-chrome 02).
+	assert.ok(!full.some((line) => /^│ (where|usage|connections) ──/.test(line)), "no group labels");
 
-	// (1) Then the odd and rdd spacer rows.
-	const noSpacers = renderPanel(model, 58, { maxRows: noLabels.length - 1 }).map(plain);
-	assert.equal(noSpacers.length, noLabels.length - spacers);
+	// (1) The odd and rdd spacer rows go first.
+	const noSpacers = renderPanel(model, 58, { maxRows: full.length - 1 }).map(plain);
+	assert.equal(noSpacers.length, full.length - spacers);
 	assert.deepEqual(noSpacers.slice(0, logo), full.slice(0, logo), "logo kept");
 	assert.ok(!noSpacers.some(isSpacer), "no spacer rows");
 	assert.deepEqual(sectionBody(noSpacers, "ODD").map((line) => line.replace(/^│[ ▎]/, "").replace(/ +│$/, "").replace(/ +/g, " ")), ["✓ explorando 0:31", "✓ implementando 1:12", "✓ explorando 0:20", "⡿ verificando 0:42"]);
@@ -1821,10 +1792,19 @@ test("agents card: width-safe at 64, 53, 40 and 20; long names and tasks are cut
 	console.log(`--- agents card, 40 and 20 columns\n${[...renderAgentsCard(long, 40, 2, NOW), ...renderAgentsCard(long, 20, 2, NOW)].map(plain).join("\n")}`);
 });
 
-test("the side panel's agents section is unchanged by start times (S35 keeps its own rules)", () => {
+test("the side panel's agents section shows each live agent's time at `now`, flush right like the card (S35)", () => {
 	const model: PanelModel = { session: { project: "app" }, agents: runningAgents };
 	const bare: PanelModel = { session: { project: "app" }, agents: runningAgents!.map(({ startedAt: _, ...agent }) => agent) };
-	assert.deepEqual(renderPanel(model, 47), renderPanel(bare, 47));
+	const row = (lines: string[], name: string) => lines.map(plain).find((line) => line.includes(` ${name} `)) ?? "";
+	const at = renderPanel(model, 47, { now: NOW });
+	assert.match(row(at, "worker"), /^│ ⠹ worker session rows +4:31 │$/);
+	assert.match(row(at, "verify"), /^│ ⠹ verify queued prompt +2:05 │$/);
+	assert.match(row(renderPanel(model, 47, { now: NOW + 1_000 }), "worker"), / 4:32 │$/, "the time follows now");
+	assert.doesNotMatch(row(at, "explore"), /\d:\d\d │$/, "a finished agent keeps no clock");
+	assert.doesNotMatch(row(renderPanel(bare, 47, { now: NOW }), "worker"), /\d:\d\d │$/, "no start time: no time, never invented");
+	assert.deepEqual(renderPanel(model, 47), renderPanel(bare, 47), "no now: no time");
+	for (const width of [58, 47, 30]) for (const line of renderPanel(model, width, { now: NOW })) assert.ok(visibleWidth(line) <= width, `${width}: ${plain(line)}`);
+	assert.ok(renderDock(model, 59, 200, 0, { now: NOW }).lines.map(plain).some((line) => / worker session rows +4:31 /.test(line)), "/dock shows it too");
 });
 
 test("/dock lists every agent and changed file; the side panel keeps its cap of 4 (S35)", () => {
@@ -2393,7 +2373,7 @@ test("S87 the agents card lists waiting tasks with running ones, with the ! glyp
 
 // --- Vivid labels S2: section titles and their counters --------------------------
 
-test("section titles and their counters draw vivid on the rail, /dock and the narrow cards; frames stay gray (S2)", () => {
+test("section titles and their counters draw vivid on the rail, /dock and the narrow cards; frames stay neutral: faded on the rail and /dock, flat gray on the cards (S2, sidebar-chrome 02)", () => {
 	const model: PanelModel = {
 		...samplePanelModel,
 		headsUp: [{ kind: "unpushed", text: "1 commit not pushed" }],
@@ -2409,7 +2389,8 @@ test("section titles and their counters draw vivid on the rail, /dock and the na
 			const line = titleLine(lines, title);
 			assert.ok(line.includes(`\x1b[1m${fgCode(panelVivid(color))}${title}`), `${title} bold in its vivid color`);
 			assert.ok(!line.includes(fgCode(color)), `${title}: no pastel left on the top rule`);
-			assert.ok(line.includes(`${fgCode(palette.frame)}╭─ `), `${title}: the frame stays gray`);
+			assert.match(line, /\x1b\[38;2;(\d+);\1;\1m╭\x1b\[39m\x1b\[38;2;(\d+);\2;\2m─\x1b\[39m /, `${title}: the frame stays a neutral gray, faded`);
+			assert.ok(!line.includes(`${fgCode(palette.frame)}╭`), `${title}: no flat frame on the rail`);
 		}
 		assert.ok(titleLine(lines, "todo").includes(`${fgCode(panelVivid(palette.coral))}3/7`), "the todo counter vivid");
 		assert.ok(titleLine(lines, "RDD").includes(`\x1b[1m${fgCode(panelVivid(palette.green))}on`), "the RDD switch vivid");
@@ -2422,6 +2403,766 @@ test("section titles and their counters draw vivid on the rail, /dock and the na
 	const agentsCard = renderAgentsCard(model.agents, 53, 1, 0);
 	assert.ok(agentsCard[0].includes(`\x1b[1m${fgCode(panelVivid(palette.lilac))}agents`) && agentsCard[0].includes(`${fgCode(panelVivid(palette.lilac))}1`), "the agents card's title and counter vivid");
 	assert.ok(!agentsCard[0].includes(fgCode(palette.lilac)), "no pastel lilac left on the agents card's top rule");
+	for (const card of [todoCard, agentsCard]) assert.ok(card[0].startsWith(`${fgCode(palette.frame)}╭─ `), "the cards' frames stay flat gray");
 	// The rows keep their own colors.
 	assert.ok(renderTodoCard(model.todo, 64)[2].includes(`\x1b[1m${fgCode(palette.text)}Confirm CI is green`), "the active task keeps the text color");
 });
+
+// Rail chrome (design sidebar-chrome/02, faded boxes): boxed sections whose frames fade into the background, no group labels.
+const boxed = (model: PanelModel, width = 47) => {
+	const lines = renderPanel(model, width).map(plain);
+	return lines.slice(lines.findIndex((line) => line.startsWith("╭─ session")));
+};
+
+/** The red channel of every `glyphs` cell in `line`, in order. */
+const frameLight = (line: string, glyphs: string) =>
+	[...line.matchAll(new RegExp(`\\x1b\\[38;2;(\\d+);\\d+;\\d+m([${glyphs}]+)`, "g"))].flatMap((match) => [...match[2]].map(() => Number(match[1])));
+
+test("rail sections are boxes again, edge to edge with no gap rows (sidebar-chrome 02)", () => {
+	const row = (text: string) => `│ ${text.padEnd(43)} │`;
+	const bottom = `╰${"─".repeat(45)}╯`;
+	assert.deepEqual(boxed({ session: { project: "p" }, footer: { cost: 0.012, rdd: "on" } } as PanelModel), [
+		`╭─ session ${"─".repeat(35)}╮`,
+		row("project  p"),
+		row("cost     $0.012"),
+		bottom,
+		`╭─ ODD ${"─".repeat(39)}╮`,
+		row("○ ready · phases show while I work"),
+		bottom,
+		`╭─ RDD ${"─".repeat(34)} on ─╮`,
+		row("● watching · reviews high-risk changes"),
+		bottom,
+		`╭─ todo ${"─".repeat(38)}╮`,
+		row("○ no tasks · the list shows while I plan"),
+		bottom,
+	]);
+});
+
+test("the session section has no where, usage or connections label rows (sidebar-chrome 02)", () => {
+	const session = { project: "p", contextPercent: 5, profile: "claude", memory: { state: "connected", saved: 0 }, mcp: [] } as PanelModel["session"];
+	const lines = boxed({ session, footer: { cost: 0.012 } } as PanelModel);
+	assert.deepEqual(lines.slice(1, 6).map((line) => line.slice(1).trim().split(/ +/)[0]), ["project", "context", "profile", "memory", "mcp"]);
+	assert.ok(!lines.some((line) => /(where|usage|connections) ──/.test(line)));
+});
+
+test("a highlighted rail row keeps its bar and background inside the box sides (sidebar-chrome 02)", () => {
+	const lines = renderPanel({ session: { project: "p" }, todo: { done: 0, total: 2, active: "Draw headers", more: 0 } } as PanelModel, 47);
+	const active = lines.find((line) => plain(line).includes("Draw headers"))!;
+	assert.ok(plain(active).startsWith("│▎"), plain(active));
+	assert.ok(plain(active).endsWith("│"), plain(active));
+	assert.ok(active.includes("\x1b[49m"));
+	assert.equal(visibleWidth(active), 47);
+});
+
+test("the narrow todo card above the prompt stays boxed in the flat frame color (sidebar-chrome 02 changes the rail only)", () => {
+	const raw = renderTodoCard({ done: 1, total: 2, active: "Draw headers", more: 0 }, 40);
+	const card = raw.map(plain);
+	assert.ok(card[0].startsWith("╭─ todo"));
+	assert.ok(card.at(-1)!.startsWith("╰"));
+	assert.ok(raw[0].startsWith(fgCode(palette.frame)), JSON.stringify(raw[0]));
+	assert.ok(raw.at(-1)!.startsWith(fgCode(palette.frame)), JSON.stringify(raw.at(-1)));
+});
+
+// The rail's divider (sidebar-chrome): a `│` in the first column, brightest at the middle, fading out at the top and bottom.
+const dividerBrightness = (line: string) => {
+	const match = /^\x1b\[38;2;(\d+);(\d+);(\d+)m│/.exec(line);
+	return match ? Number(match[1]) : plain(line)[0] === " " ? 0 : NaN;
+};
+
+test("the rail fills the screen rows with the divider in the first column, a blank, then the panel two columns narrower (sidebar-chrome)", () => {
+	const model = { session: { project: "p" } } as PanelModel;
+	const rail = renderRail(model, 47, { maxRows: 30 });
+	const panel = renderPanel(model, 45, { maxRows: 30 });
+	assert.equal(rail.length, 30);
+	for (const line of rail) assert.equal(visibleWidth(line), 47, JSON.stringify(plain(line)));
+	for (const line of rail) assert.equal(plain(line)[1], " ", JSON.stringify(plain(line)));
+	assert.deepEqual(rail.slice(0, panel.length).map((line) => plain(line).slice(2).trimEnd()), panel.map((line) => plain(line).trimEnd()));
+	assert.deepEqual(rail.slice(panel.length).map((line) => plain(line).slice(2).trim()), Array(30 - panel.length).fill(""));
+});
+
+test("the divider is brightest at the middle and fades into the background at the top and bottom (sidebar-chrome)", () => {
+	const rail = renderRail({ session: { project: "p" } } as PanelModel, 47, { maxRows: 30 });
+	const light = rail.map(dividerBrightness);
+	assert.ok(light.every((value) => !Number.isNaN(value)), "every first cell is a divider or blank");
+	assert.equal(light[0], 0);
+	assert.equal(light[29], 0);
+	assert.deepEqual(light, [...light].reverse());
+	assert.equal(Math.max(...light), light[14]);
+	for (let index = 1; index <= 14; index++) assert.ok(light[index] >= light[index - 1], `row ${index} dims toward the top`);
+});
+
+test("without a known screen height the divider spans the panel alone (sidebar-chrome)", () => {
+	const model = { session: { project: "p" } } as PanelModel;
+	assert.equal(renderRail(model, 47).length, renderPanel(model, 45).length);
+});
+
+test("box borders fade like the divider: brightest at the middle of each edge, corners into the background (sidebar-chrome)", () => {
+	const session = { project: "p", contextPercent: 5, profile: "claude", memory: { state: "connected", saved: 0 }, mcp: [] } as PanelModel["session"];
+	const lines = renderPanel({ session, footer: { cost: 0 } } as PanelModel, 47);
+	const top = lines.findIndex((line) => plain(line).startsWith("╭─ session"));
+	const end = lines.findIndex((line, index) => index > top && plain(line).startsWith("╰"));
+	const bottom = frameLight(lines[end], "╰─╯");
+	assert.equal(bottom.length, 47);
+	assert.deepEqual(bottom, [...bottom].reverse(), "the bottom border is symmetric");
+	assert.ok(bottom[0] <= 0x18, "the bottom corners start in the background");
+	assert.ok(Math.max(...bottom) > 0x50, "the bottom border lights up in the middle");
+	for (let index = 1; index <= 23; index++) assert.ok(bottom[index] >= bottom[index - 1], `bottom cell ${index} dims toward the corners`);
+	const [topLeft] = frameLight(lines[top], "╭");
+	const [topRight] = frameLight(lines[top], "╮");
+	assert.ok(topLeft <= 0x18, `top-left corner ${topLeft}`);
+	assert.ok(topRight <= 0x18, `top-right corner ${topRight}`);
+	const body = lines.slice(top + 1, end);
+	const left = body.map((line) => Number(/^\x1b\[38;2;(\d+);\d+;\d+m│/.exec(line)![1]));
+	const right = body.map((line) => Number(/\x1b\[38;2;(\d+);\d+;\d+m│\x1b\[39m$/.exec(line)![1]));
+	assert.deepEqual(left, [...left].reverse(), "the sides are symmetric top to bottom");
+	assert.equal(Math.max(...left), left[Math.floor(left.length / 2)], "the sides are brightest at the middle row");
+	assert.deepEqual(right, left, "both sides match on each row");
+});
+
+// --- Look settings S3/S6: frame styles (faded, classic, none) ---------------------
+
+const tiny: PanelModel = { session: { project: "p" }, footer: { cost: 0.012, rdd: "on" } } as PanelModel;
+/** The rail's lines from the session section on, logo left out. */
+const fromSession = (lines: string[]) => lines.slice(lines.findIndex((line) => /^\s*(╭─ )?session /.test(plain(line))));
+
+test("without a frames option the panel, the rail and /dock draw today's faded boxes byte for byte (S6)", () => {
+	for (const model of [samplePanelModel, longModel, tiny]) {
+		assert.deepEqual(renderPanel(model, 47), renderPanel(model, 47, { frames: "faded" }));
+		assert.deepEqual(renderRail(model, 47, { maxRows: 60 }), renderRail(model, 47, { maxRows: 60, frames: "faded" }));
+		assert.deepEqual(renderDock(model, 57, 40), renderDock(model, 57, 40, 0, { frames: "faded" }));
+	}
+});
+
+test("classic frames draw today's box geometry in the flat frame gray (S3)", () => {
+	const row = (text: string) => `│ ${text.padEnd(43)} │`;
+	const bottom = `╰${"─".repeat(45)}╯`;
+	const raw = fromSession(renderPanel(tiny, 47, { frames: "classic" }));
+	assert.deepEqual(raw.map(plain), [
+		`╭─ session ${"─".repeat(35)}╮`,
+		row("project  p"),
+		row("cost     $0.012"),
+		bottom,
+		`╭─ ODD ${"─".repeat(39)}╮`,
+		row("○ ready · phases show while I work"),
+		bottom,
+		`╭─ RDD ${"─".repeat(34)} on ─╮`,
+		row("● watching · reviews high-risk changes"),
+		bottom,
+		`╭─ todo ${"─".repeat(38)}╮`,
+		row("○ no tasks · the list shows while I plan"),
+		bottom,
+	]);
+	const flat = fgCode(palette.frame);
+	for (const line of raw) {
+		assert.ok(line.startsWith(flat), JSON.stringify(line));
+		assert.equal(frameLight(line, "╭╮╰╯─│").filter((red) => red !== palette.frame[0]).length, 0, `only flat frame glyphs: ${JSON.stringify(plain(line))}`);
+	}
+	const title = raw.find((line) => plain(line).startsWith("╭─ RDD"))!;
+	assert.ok(title.includes(`\x1b[1m${fgCode(panelVivid(palette.rose))}RDD`), "the title bold in its vivid color");
+	assert.ok(title.includes(`\x1b[1m${fgCode(panelVivid(palette.green))}on`), "the right value styled as today");
+});
+
+test("no-box frames draw each title on a rule, rows two cells in and one blank row between sections (S3)", () => {
+	const row = (text: string) => `  ${text}`.padEnd(47);
+	assert.deepEqual(fromSession(renderPanel(tiny, 47, { frames: "none" })).map(plain), [
+		` session ${"─".repeat(37)} `,
+		row("project  p"),
+		row("cost     $0.012"),
+		" ".repeat(47),
+		` ODD ${"─".repeat(41)} `,
+		row("○ ready · phases show while I work"),
+		" ".repeat(47),
+		` RDD ${"─".repeat(38)} on `,
+		row("● watching · reviews high-risk changes"),
+		" ".repeat(47),
+		` todo ${"─".repeat(40)} `,
+		row("○ no tasks · the list shows while I plan"),
+	]);
+});
+
+test("no-box frames draw no box glyph; the title stays vivid and the rule fades symmetrically (S3)", () => {
+	for (const model of [samplePanelModel, longModel, tiny]) {
+		for (const line of fromSession(renderPanel(model, 47, { frames: "none" })).map(plain)) {
+			assert.ok(!/[╭╮╰╯]/.test(line), line);
+			assert.ok(!/^│|│$/.test(line), `no side frame: ${line}`);
+		}
+	}
+	const raw = fromSession(renderPanel(tiny, 47, { frames: "none" }));
+	const header = raw.find((line) => plain(line).startsWith(" RDD "))!;
+	assert.ok(header.includes(`\x1b[1m${fgCode(panelVivid(palette.rose))}RDD`), "the title bold in its vivid color");
+	assert.ok(header.includes(`\x1b[1m${fgCode(panelVivid(palette.green))}on`), "the right value styled as today");
+	const rule = frameLight(header, "─");
+	assert.equal(rule.length, 38);
+	assert.deepEqual(rule, [...rule].reverse(), "the rule is symmetric");
+	assert.ok(rule[0] <= 0x18 && rule.at(-1)! <= 0x18, "both ends sink into the background");
+	assert.ok(Math.max(...rule) > 0x50, "the rule lights up in the middle");
+	for (let index = 1; index < rule.length / 2; index++) assert.ok(rule[index] >= rule[index - 1], `rule cell ${index} dims toward the ends`);
+});
+
+test("a no-box highlighted row keeps the boxed column layout: bar, text, then a plain margin (S3)", () => {
+	const lines = renderPanel(samplePanelModel, 47, { frames: "none" });
+	const active = lines.find((line) => line.includes(HIGHLIGHT_BG) && plain(line).includes("Confirm CI is green"))!;
+	assert.ok(active.startsWith(` ${HIGHLIGHT_BG}${fgCode(palette.pink)}▎`), JSON.stringify(active));
+	assert.ok(active.endsWith(" \x1b[49m "), JSON.stringify(active));
+	assert.equal(visibleWidth(active), 47);
+	const boxedActive = renderPanel(samplePanelModel, 47).find((line) => plain(line).includes("Confirm CI is green"))!;
+	assert.equal(plain(active), ` ${plain(boxedActive).slice(1, -1)} `, "same columns as the boxed row");
+});
+
+test("no-box frames on a short screen drop the blank rows between sections first; the other styles keep today's steps (S3)", () => {
+	const full = renderPanel(samplePanelModel, 47, { frames: "none" });
+	const blank = " ".repeat(47);
+	assert.ok(full.map(plain).includes(blank));
+	assert.deepEqual(renderPanel(samplePanelModel, 47, { frames: "none", maxRows: full.length }), full, "it fits: blank rows drawn");
+	const short = renderPanel(samplePanelModel, 47, { frames: "none", maxRows: full.length - 1 });
+	assert.deepEqual(short, full.filter((line) => plain(line) !== blank), "only the blank rows left, the spacers stay");
+	const shorter = renderPanel(samplePanelModel, 47, { frames: "none", maxRows: short.length - 1 }).map(plain);
+	assert.ok(!shorter.includes(blank) && shorter.length < short.length - 1, "then today's steps");
+	for (const frames of ["faded", "classic"] as const) {
+		const boxedFull = renderPanel(samplePanelModel, 47, { frames });
+		const boxedShort = renderPanel(samplePanelModel, 47, { frames, maxRows: boxedFull.length - 1 }).map(plain);
+		assert.deepEqual(boxedShort, renderPanel(samplePanelModel, 47, { maxRows: boxedFull.length - 1 }).map(plain), `${frames}: today's first step`);
+	}
+});
+
+test("the rail keeps its fading divider for every frame style, and /dock honors frames (S3)", () => {
+	for (const frames of ["faded", "classic", "none"] as const) {
+		const rail = renderRail(tiny, 47, { maxRows: 30, frames });
+		const panel = renderPanel(tiny, 45, { maxRows: 30, frames });
+		assert.equal(rail.length, 30);
+		assert.deepEqual(rail.map(dividerBrightness), renderRail(tiny, 47, { maxRows: 30 }).map(dividerBrightness), `${frames}: same divider`);
+		assert.deepEqual(rail.slice(0, panel.length).map((line) => plain(line).slice(2)), panel.map((line) => plain(line).padEnd(45)));
+		const dock = renderDock(samplePanelModel, 57, 200, 0, { frames }).lines.map((line) => plain(line).slice(1, -1).trimEnd());
+		const expected = renderPanel(samplePanelModel, 55, { todoExpanded: true, listsExpanded: true, oddExpanded: true, frames }).map((line) => plain(line).trimEnd());
+		assert.deepEqual(dock.slice(DOCK_TOP_ROWS, DOCK_TOP_ROWS + expected.length), expected, `${frames}: /dock draws the panel in that style`);
+	}
+});
+
+test("the narrow todo and agents cards stay flat boxes whatever the frame style (S3)", () => {
+	// The cards take no frame option: they are the same as before for every look.
+	assert.ok(renderTodoCard(samplePanelModel.todo, 40)[0].startsWith(`${fgCode(palette.frame)}╭─ `));
+	assert.ok(renderAgentsCard(samplePanelModel.agents, 40, 1, 0)[0].startsWith(`${fgCode(palette.frame)}╭─ `));
+});
+
+for (const frames of ["faded", "classic", "none"] as const) {
+	test(`every ${frames} line fits the width, every section line fills it, sample and long models (S3)`, () => {
+		for (const width of [55, 47, 40, 30, 20]) {
+			for (const model of [samplePanelModel, longModel, tiny]) {
+				const lines = renderPanel(model, width, { frames });
+				for (const line of lines) assert.ok(visibleWidth(line) <= width, `${frames} ${width}: ${JSON.stringify(plain(line))}`);
+				for (const line of fromSession(lines)) assert.equal(visibleWidth(line), width, `${frames} ${width}: ${JSON.stringify(plain(line))}`);
+				for (const line of renderRail(model, width, { frames, maxRows: 80 })) assert.equal(visibleWidth(line), width, `rail ${frames} ${width}`);
+			}
+		}
+	});
+}
+
+test("no-box headers fall back like the boxed top border on narrow widths: the right value drops, then the title ellipsizes (S3)", () => {
+	const header = (width: number, title: string) => plain(renderPanel(tiny, width, { frames: "none" }).find((line) => plain(line).startsWith(` ${title}`))!);
+	assert.equal(header(12, "R"), ` RDD ${"─".repeat(3)} on `);
+	assert.equal(header(10, "R"), ` RDD ─ on `, "one rule cell is enough");
+	assert.equal(header(9, "R"), ` RDD ${"─".repeat(3)} `, "no room for the value: it drops");
+	assert.equal(header(7, "R"), " RDD ─ ");
+	assert.equal(header(8, "s"), " ses… ─ ", "the title ellipsizes to keep one rule cell");
+});
+
+// --- Look settings S4, S6: soft colors ---------------------------------------------
+
+const lookModel: PanelModel = {
+	...samplePanelModel,
+	headsUp: [{ kind: "unpushed", text: "1 commit not pushed" }],
+	ci: { sha: "fb7ca9d", checks: [{ name: "test", state: "running", seconds: 12 }] },
+};
+
+test("S4 soft colors: section titles and counters in their own pastel on the rail, /dock and the narrow cards, in every frame style", () => {
+	const titles: [string, (typeof palette)[keyof typeof palette]][] = [
+		["session", palette.teal], ["heads-up", palette.red], ["ODD", palette.amber], ["RDD", palette.rose],
+		["CI", palette.blue], ["agents", palette.lilac], ["todo", palette.coral], ["changes", palette.green],
+	];
+	const titleLine = (lines: string[], title: string) => lines.find((line) => plain(line).replace(/^[│ ]+/, "").replace(/^╭─ /, "").startsWith(`${title} `))!;
+	for (const frames of ["faded", "classic", "none"] as const) {
+		const views = [renderPanel(lookModel, 55, { frames, colors: "soft" }), renderRail(lookModel, 57, { frames, colors: "soft" }), renderDock(lookModel, DOCK_WIDTH + 2, 200, 0, { frames, colors: "soft" }).lines];
+		for (const lines of views) {
+			for (const [title, color] of titles) {
+				const line = titleLine(lines, title);
+				assert.ok(line.includes(`\x1b[1m${fgCode(color)}${title}`), `${frames}: ${title} bold in its pastel`);
+				assert.ok(!line.includes(fgCode(panelVivid(color))), `${frames}: ${title} no vivid tone`);
+			}
+			assert.ok(titleLine(lines, "todo").includes(`${fgCode(palette.coral)}3/7`), "the todo counter pastel");
+			assert.ok(titleLine(lines, "RDD").includes(`\x1b[1m${fgCode(palette.green)}on`), "the RDD switch pastel");
+		}
+		assert.deepEqual(renderPanel(lookModel, 55, { frames, colors: "soft" }).map(plain), renderPanel(lookModel, 55, { frames }).map(plain), `${frames}: same words and layout`);
+	}
+	const todoCard = renderTodoCard(lookModel.todo, 64, undefined, "soft");
+	assert.ok(todoCard[0].includes(`\x1b[1m${fgCode(palette.coral)}todo`) && todoCard[0].includes(`${fgCode(palette.coral)}3/7`), "the todo card pastel");
+	const agentsCard = renderAgentsCard(lookModel.agents, 53, 1, 0, "soft");
+	assert.ok(agentsCard[0].includes(`\x1b[1m${fgCode(palette.lilac)}agents`) && agentsCard[0].includes(`${fgCode(palette.lilac)}1`), "the agents card pastel");
+	assert.ok(!agentsCard[0].includes(fgCode(panelVivid(palette.lilac))), "no vivid lilac on the agents card");
+});
+
+test("S6 omitting the colors draws vivid, byte for byte, on the rail, /dock and the narrow cards", () => {
+	for (const frames of ["faded", "classic", "none"] as const) {
+		for (const width of [55, 47, 30]) {
+			assert.deepEqual(renderPanel(lookModel, width, { frames }), renderPanel(lookModel, width, { frames, colors: "vivid" }), `panel ${frames} ${width}`);
+			assert.deepEqual(renderRail(lookModel, width, { frames, maxRows: 40 }), renderRail(lookModel, width, { frames, maxRows: 40, colors: "vivid" }), `rail ${frames} ${width}`);
+		}
+		assert.deepEqual(renderDock(lookModel, 60, 50, 0, { frames }), renderDock(lookModel, 60, 50, 0, { frames, colors: "vivid" }), `dock ${frames}`);
+	}
+	assert.deepEqual(renderTodoCard(lookModel.todo, 64, 1), renderTodoCard(lookModel.todo, 64, 1, "vivid"));
+	assert.deepEqual(renderAgentsCard(lookModel.agents, 53, 1, 0), renderAgentsCard(lookModel.agents, 53, 1, 0, "vivid"));
+	assert.ok(renderPanel(lookModel, 55).some((line) => line.includes(`\x1b[1m${fgCode(panelVivid(palette.coral))}todo`)), "vivid is today's panelVivid");
+});
+
+// Look settings S2: the rail logo options. The logo rows sit above the session section.
+const LOGO_STYLES = ["braille", "text", "none"] as const;
+const FRAME_STYLES = ["faded", "classic", "none"] as const;
+const LOGO_PANEL_ROWS: Record<number, Record<(typeof LOGO_STYLES)[number], string[]>> = {
+	55: {
+		braille: ["  ⣤⠛⠛⠛ ⣿⠛⠛⠛ ⣿⣤ ⣿ ⠛⣿⣿⠛ ⣿   ⣿⠛⠛⠛ ⣤⠛⠛⠛ ⣿  ⣿ ⣿⠛⠛⠛ ⣿   ⣿", "  ⣿ ⠛⣿ ⣿⠛⠛  ⣿ ⠛⣿  ⣿⣿  ⣿   ⣿⠛⠛   ⠛⠛⣤ ⣿⠛⠛⣿ ⣿⠛⠛  ⣿   ⣿", "   ⠛⠛⠛ ⠛⠛⠛⠛ ⠛  ⠛  ⠛⠛  ⠛⠛⠛ ⠛⠛⠛⠛ ⠛⠛⠛  ⠛  ⠛ ⠛⠛⠛⠛ ⠛⠛⠛ ⠛⠛⠛"],
+		text: ["  GENTLESHELL"],
+		none: [],
+	},
+	47: {
+		braille: [" ⣤⠛⠛⠛ ⣿⠛⠛ ⣿⣤ ⣿ ⠛⣿⠛ ⣿   ⣿⠛⠛ ⣤⠛⠛ ⣿ ⣿ ⣿⠛⠛ ⣿   ⣿", " ⣿ ⠛⣿ ⣿⠛  ⣿ ⠛⣿  ⣿  ⣿   ⣿⠛   ⠛⣤ ⣿⠛⣿ ⣿⠛  ⣿   ⣿", "  ⠛⠛⠛ ⠛⠛⠛ ⠛  ⠛  ⠛  ⠛⠛⠛ ⠛⠛⠛ ⠛⠛  ⠛ ⠛ ⠛⠛⠛ ⠛⠛⠛ ⠛⠛⠛"],
+		text: ["  GENTLESHELL"],
+		none: [],
+	},
+	45: {
+		braille: ["⣤⠛⠛⠛ ⣿⠛⠛ ⣿⣤ ⣿ ⠛⣿⠛ ⣿   ⣿⠛⠛ ⣤⠛⠛ ⣿ ⣿ ⣿⠛⠛ ⣿   ⣿", "⣿ ⠛⣿ ⣿⠛  ⣿ ⠛⣿  ⣿  ⣿   ⣿⠛   ⠛⣤ ⣿⠛⣿ ⣿⠛  ⣿   ⣿", " ⠛⠛⠛ ⠛⠛⠛ ⠛  ⠛  ⠛  ⠛⠛⠛ ⠛⠛⠛ ⠛⠛  ⠛ ⠛ ⠛⠛⠛ ⠛⠛⠛ ⠛⠛⠛"],
+		text: ["  GENTLESHELL"],
+		none: [],
+	},
+	30: { braille: ["  G E N T L E S H E L L"], text: ["  GENTLESHELL"], none: [] },
+	11: { braille: ["GENTLESHELL"], text: ["GENTLESHELL"], none: [] },
+	5: { braille: [], text: [], none: [] },
+};
+
+test("S2 renderPanel opens with each logo style's exact rows, centered at most two columns in, then the session section", () => {
+	for (const frames of FRAME_STYLES) {
+		for (const [width, styles] of Object.entries(LOGO_PANEL_ROWS)) {
+			const columns = Number(width);
+			const bare = renderPanel(samplePanelModel, columns, { frames, logo: "none" });
+			for (const [logo, rows] of Object.entries(styles)) {
+				const lines = renderPanel(samplePanelModel, columns, { frames, logo: logo as (typeof LOGO_STYLES)[number] });
+				assert.deepEqual(lines.slice(0, rows.length).map((line) => plain(line).trimEnd()), rows, `${logo} logo, ${frames} frames, width ${width}`);
+				assert.deepEqual(lines.slice(rows.length), bare, `${logo} logo, ${frames} frames, width ${width}: the sections follow unchanged`);
+			}
+		}
+	}
+});
+
+test("S2 with no logo the panel's first line is the session section header in each frame style", () => {
+	const header = { faded: /^╭─ session ─+╮$/, classic: /^╭─ session ─+╮$/, none: /^ session ─+ $/ };
+	for (const frames of FRAME_STYLES) {
+		for (const width of [55, 47, 45, 30]) {
+			const first = plain(renderPanel(samplePanelModel, width, { frames, logo: "none" })[0]);
+			assert.match(first, header[frames], `${frames} at ${width}`);
+			assert.equal(first.length, width, `${frames} at ${width}`);
+		}
+		assert.match(plain(renderRail(samplePanelModel, 47, { frames, logo: "none" })[0]), frames === "none" ? /^.  session ─+ $/ : /^. ╭─ session ─+╮$/, `rail, ${frames}`);
+	}
+});
+
+test("S6 omitting logo is the braille logo, byte for byte, in renderPanel, renderRail and renderDock", () => {
+	for (const model of [samplePanelModel, longModel]) {
+		for (const frames of FRAME_STYLES) {
+			for (const width of [58, 55, 47, 45, 30, 11, 5]) {
+				assert.deepEqual(renderPanel(model, width, { frames }), renderPanel(model, width, { frames, logo: "braille" }), `panel ${frames} ${width}`);
+				assert.deepEqual(renderPanel(model, width, { frames, maxRows: 12 }), renderPanel(model, width, { frames, maxRows: 12, logo: "braille" }), `short panel ${frames} ${width}`);
+				assert.deepEqual(renderRail(model, width, { frames }), renderRail(model, width, { frames, logo: "braille" }), `rail ${frames} ${width}`);
+			}
+			for (const width of [100, 57, 49, 13]) assert.deepEqual(renderDock(model, width, 40, 0, { frames }), renderDock(model, width, 40, 0, { frames, logo: "braille" }), `dock ${frames} ${width}`);
+		}
+	}
+	assert.deepEqual(renderDock(samplePanelModel, 57, 40), renderDock(samplePanelModel, 57, 40, 0, { logo: "braille" }), "dock without options");
+});
+
+test("S2 renderDock and renderRail draw the logo style they are given", () => {
+	const dock = (logo: (typeof LOGO_STYLES)[number]) => renderDock(samplePanelModel, 57, 80, 0, { logo }).lines.map(plain);
+	assert.equal(dock("text")[DOCK_TOP_ROWS].trimEnd(), "   GENTLESHELL");
+	assert.match(dock("none")[DOCK_TOP_ROWS], /^ ╭─ session ─+╮ $/);
+	assert.equal(dock("braille")[DOCK_TOP_ROWS], renderDock(samplePanelModel, 57, 80).lines.map(plain)[DOCK_TOP_ROWS]);
+	assert.equal(plain(renderRail(samplePanelModel, 47, { logo: "text" })[0]).slice(1).trimEnd(), "   GENTLESHELL");
+});
+
+test("S2 a short screen keeps the braille and text logos and drops the other parts first", () => {
+	for (const frames of FRAME_STYLES) {
+		const text = renderPanel(longModel, 47, { frames, logo: "text", maxRows: 10 }).map(plain);
+		assert.equal(text[0].trimEnd(), "  GENTLESHELL", `text logo kept, ${frames}`);
+		const braille = renderPanel(longModel, 47, { frames, logo: "braille", maxRows: 10 }).map(plain);
+		assert.match(braille[0], /^ [⠛⣤⣿]/, `braille logo kept, ${frames}`);
+		const none = renderPanel(longModel, 47, { frames, logo: "none", maxRows: 10 }).map(plain);
+		assert.match(none[0], /session/, `no logo, ${frames}`);
+		assert.ok(none.length <= text.length, `no logo never takes more rows, ${frames}`);
+	}
+});
+
+test("S2 every line fits the width for each logo and frame style, sample and long models", () => {
+	for (const [name, model] of [["sample", samplePanelModel], ["long", longModel]] as const) {
+		for (const logo of LOGO_STYLES) {
+			for (const frames of FRAME_STYLES) {
+				for (const width of [58, 55, 47, 45, 30, 21, 11, 5, 1]) {
+					for (const line of renderPanel(model, width, { logo, frames })) assert.ok(visibleWidth(line) <= width, `panel ${name} ${logo} ${frames} ${width}`);
+					for (const line of renderRail(model, width, { logo, frames })) assert.ok(visibleWidth(line) <= width, `rail ${name} ${logo} ${frames} ${width}`);
+				}
+				for (const width of [100, 57, 49, 13, 3]) for (const line of renderDock(model, width, 40, 0, { logo, frames }).lines) assert.equal(visibleWidth(line), width, `dock ${name} ${logo} ${frames} ${width}`);
+			}
+		}
+	}
+});
+
+// --- look-more S1: the divider's intensity ------------------------------------------
+
+/** A rail line without its divider cell: the blank and the panel, colors included. */
+const afterDivider = (line: string) => line.replace(/^(?:\x1b\[[0-9;]*m)*[│ ](?:\x1b\[[0-9;]*m)*/, "");
+
+test("look-more S1 medium is today's divider byte for byte, the default; every level keeps the panel and the width", async () => {
+	const { DIVIDER_PEAKS } = await import("../lib/panel.ts");
+	assert.deepEqual(DIVIDER_PEAKS, { off: 0, subtle: 0.2, medium: 0.35, strong: 0.55 });
+	for (const model of [samplePanelModel, longModel, { session: { project: "p" } } as PanelModel]) {
+		for (const rows of [undefined, 30, 60]) {
+			const today = renderRail(model, 47, { maxRows: rows });
+			assert.deepEqual(renderRail(model, 47, { maxRows: rows, divider: "medium" }), today, `medium ${rows}`);
+			for (const divider of ["off", "subtle", "strong"] as const) {
+				const rail = renderRail(model, 47, { maxRows: rows, divider });
+				assert.equal(rail.length, today.length, `${divider}: same rows`);
+				rail.forEach((line, index) => {
+					assert.equal(visibleWidth(line), visibleWidth(today[index]), `${divider}: same width`);
+					assert.equal(afterDivider(line), afterDivider(today[index]), `${divider}: the panel and its box fades are untouched`);
+				});
+			}
+		}
+	}
+});
+
+test("look-more S1 off draws no divider glyph but keeps the blank first column; strong is brighter than medium, medium than subtle", () => {
+	const model = { session: { project: "p" } } as PanelModel;
+	const off = renderRail(model, 47, { maxRows: 30, divider: "off" });
+	for (const line of off) {
+		assert.equal(plain(line).slice(0, 2), "  ", "the divider column and the gap stay blank");
+		assert.equal(visibleWidth(line), 47);
+	}
+	assert.deepEqual(off.map((line) => plain(line).slice(2)), renderRail(model, 47, { maxRows: 30 }).map((line) => plain(line).slice(2)), "the panel does not move");
+	const light = (divider: "subtle" | "medium" | "strong") => renderRail(model, 47, { maxRows: 30, divider }).map(dividerBrightness);
+	const [subtle, medium, strong] = [light("subtle"), light("medium"), light("strong")];
+	for (const levels of [subtle, medium, strong]) {
+		assert.ok(levels.every((value) => !Number.isNaN(value)));
+		assert.equal(levels[0], 0, "fades out at the top");
+		assert.equal(levels[29], 0, "and at the bottom");
+		assert.deepEqual(levels, [...levels].reverse(), "symmetric");
+		assert.equal(Math.max(...levels), levels[14], "brightest at the middle");
+	}
+	assert.ok(strong[14] > medium[14] && medium[14] > subtle[14], `peaks ${subtle[14]} < ${medium[14]} < ${strong[14]}`);
+	for (let index = 0; index < 30; index++) assert.ok(strong[index] >= medium[index] && medium[index] >= subtle[index], `row ${index}`);
+});
+
+// --- look-more S2: motion off -------------------------------------------------------
+
+/** entranceModel at `entrance` with every animated input set from `seed`: the spinner, the ODD orb frame and its shine step. */
+const movingModel = (seed: number, entrance?: number): PanelModel => {
+	const model = entranceModel(entrance);
+	model.spinner = seed;
+	model.odd!.steps[1] = { ...model.odd!.steps[1], frame: seed, scan: seed * 3 };
+	model.ci = { checks: [{ name: "tests", state: "running", seconds: 12 }] } as PanelModel["ci"];
+	return model;
+};
+
+test("look-more S2 motion off: the rail, the panel and /dock show one fixed frame whatever the spinner, orb, shine and entrance", () => {
+	const still = (render: (model: PanelModel) => string[]) => {
+		const first = render(movingModel(0));
+		for (const [seed, entrance] of [[1, undefined], [5, 0], [7, 2], [9, 6], [13, 40]] as const) assert.deepEqual(render(movingModel(seed, entrance)), first, `seed ${seed} entrance ${entrance}`);
+		return first;
+	};
+	const panel = still((model) => renderPanel(model, 47, { motion: "off" }));
+	still((model) => renderRail(model, 49, { motion: "off", maxRows: 60 }));
+	still((model) => renderDock(model, 64, 60, 0, { motion: "off" }).lines);
+	// The fixed frame is the still one: no spinner frame, the middle orb frame, the label muted, no entrance colors.
+	const reference = movingModel(0);
+	delete reference.spinner;
+	delete reference.odd!.steps[1].frame;
+	delete reference.odd!.steps[1].scan;
+	assert.deepEqual(panel, renderPanel(reference, 47), "the frames motion on shows without animated inputs");
+	assert.ok(!panel.some((line) => line.includes(ENTRANCE_WHITE)), "no entrance shine, no label shine");
+	const text = panel.map(plain).join("\n");
+	assert.match(text, /⠹ verify/, "the running agent keeps its (still) spinner glyph");
+	assert.match(text, /✓ explore/, "done keeps ✓");
+});
+
+test("look-more S2 motion on (the default) still animates exactly as today", () => {
+	assert.deepEqual(renderPanel(movingModel(3, 1), 47, { motion: "on" }), renderPanel(movingModel(3, 1), 47));
+	assert.notDeepEqual(renderPanel(movingModel(3), 47), renderPanel(movingModel(4), 47), "the frames move");
+});
+
+test("look-more S2 motion off: the narrow todo and agents cards hold the still frame and play no entrance", () => {
+	const todo = (seed: number, entrance?: number) => renderTodoCard(movingModel(seed, entrance).todo, 47, seed, undefined, "off");
+	const agents = (seed: number, entrance?: number) => renderAgentsCard(movingModel(seed, entrance).agents, 47, seed, 10_000, undefined, "off");
+	for (const [seed, entrance] of [[1, 0], [6, 4], [8, undefined]] as const) {
+		assert.deepEqual(todo(seed, entrance), todo(0), `todo ${seed}`);
+		assert.deepEqual(agents(seed, entrance), agents(0), `agents ${seed}`);
+	}
+	assert.deepEqual(todo(4, 0), renderTodoCard(entranceModel().todo, 47, undefined), "the still todo card");
+	assert.deepEqual(agents(4, 0), renderAgentsCard(entranceModel().agents, 47, undefined, 10_000), "the still agents card");
+	assert.deepEqual(renderTodoCard(movingModel(4, 0).todo, 47, 4, undefined, "on"), renderTodoCard(movingModel(4, 0).todo, 47, 4), "on is today");
+});
+
+// --- look-more S4: the accent -------------------------------------------------------
+
+const ACCENTS = ["pink", "teal", "lilac", "amber", "green"] as const;
+const BAR = (color: readonly [number, number, number]) => `${fgCode(color)}▎`;
+
+test("look-more S4 the highlight bar and the active todo spinner take the accent's base tone; every other row, title and counter stays", async () => {
+	const { accentBase } = await import("../lib/palette.ts");
+	for (const frames of ["faded", "classic", "none"] as const) {
+		const pink = renderPanel(lookModel, 55, { frames, logo: "none" });
+		for (const accent of ACCENTS.slice(1)) {
+			const base = accentBase(accent);
+			const lines = renderPanel(lookModel, 55, { frames, logo: "none", accent });
+			assert.equal(lines.length, pink.length);
+			assert.deepEqual(lines.map(plain), pink.map(plain), `${frames} ${accent}: same words and layout`);
+			assert.ok(lines.some((line) => line.includes(BAR(base))), `${frames} ${accent}: the bar`);
+			assert.ok(!lines.some((line) => line.includes(BAR(palette.pink))), `${frames} ${accent}: no pink bar`);
+			const todo = lines.find((line) => plain(line).includes("Confirm CI is green"))!;
+			assert.ok(todo.includes(`${fgCode(base)}⠹`), `${frames} ${accent}: the todo spinner`);
+			lines.forEach((line, index) => {
+				if (!line.includes("▎")) assert.equal(line, pink[index], `${frames} ${accent}: row ${index} without the bar is today's`);
+			});
+		}
+	}
+});
+
+test("look-more S4 the SHELL half of the logo takes the accent; GENTLE and the pink logo stay", async () => {
+	const { renderLogo } = await import("../lib/logo.ts");
+	const { accentTone } = await import("../lib/palette.ts");
+	for (const width of [55, 47, 30, 12]) {
+		for (const style of ["braille", "text"] as const) {
+			assert.deepEqual(renderLogo(width, style, "pink"), renderLogo(width, style), `${width} ${style}: pink is today's`);
+			const pink = renderLogo(width, style);
+			for (const accent of ACCENTS.slice(1)) {
+				const lines = renderLogo(width, style, accent);
+				assert.deepEqual(lines.map(plain), pink.map(plain), `${width} ${style} ${accent}: same glyphs`);
+				assert.ok(lines.join("").includes(fgCode(accentTone(palette.sexyPink, accent))), `${width} ${style} ${accent}: SHELL in the accent`);
+				assert.ok(!lines.join("").includes(fgCode(palette.sexyPink)), `${width} ${style} ${accent}: no sexy pink`);
+				assert.ok(lines.join("").includes(fgCode([230, 230, 230])) || lines.join("").includes(fgCode([205, 205, 205])) || lines.join("").includes(fgCode([180, 180, 180])), "GENTLE gray");
+			}
+		}
+	}
+	assert.deepEqual(renderLogo(55, "none", "teal"), []);
+	assert.ok(renderPanel(lookModel, 55, { accent: "teal" })[0].includes(fgCode(accentTone(palette.sexyPink, "teal"))), "the rail's logo follows the accent");
+});
+
+test("look-more S7 omitting the accent draws pink, byte for byte, on the panel, the rail, /dock and the todo card", () => {
+	for (const frames of ["faded", "classic", "none"] as const) {
+		for (const colors of ["vivid", "soft"] as const) {
+			for (const width of [55, 47, 30]) {
+				assert.deepEqual(renderPanel(lookModel, width, { frames, colors }), renderPanel(lookModel, width, { frames, colors, accent: "pink" }), `panel ${frames} ${colors} ${width}`);
+				assert.deepEqual(renderRail(lookModel, width, { frames, colors, maxRows: 40 }), renderRail(lookModel, width, { frames, colors, maxRows: 40, accent: "pink" }), `rail ${frames} ${colors} ${width}`);
+			}
+			assert.deepEqual(renderDock(lookModel, 60, 50, 0, { frames, colors }), renderDock(lookModel, 60, 50, 0, { frames, colors, accent: "pink" }), `dock ${frames} ${colors}`);
+		}
+	}
+	assert.deepEqual(renderTodoCard(lookModel.todo, 64, 1), renderTodoCard(lookModel.todo, 64, 1, undefined, undefined, "pink"));
+	assert.ok(renderPanel(lookModel, 55).some((line) => line.includes(BAR(palette.pink))), "today's bar is the pastel pink");
+});
+
+test("look-more S4 /dock and the narrow todo card follow the accent too", async () => {
+	const { accentBase } = await import("../lib/palette.ts");
+	const dock = renderDock(lookModel, 60, 50, 0, { accent: "green" }).lines;
+	assert.ok(dock.some((line) => line.includes(BAR(accentBase("green")))), "/dock bar");
+	const card = renderTodoCard(lookModel.todo, 64, 1, undefined, undefined, "lilac");
+	assert.ok(card.some((line) => line.includes(BAR(accentBase("lilac")))), "todo card bar");
+	assert.deepEqual(card.map(plain), renderTodoCard(lookModel.todo, 64, 1).map(plain));
+});
+
+// --- look-more S6: the sections shown and their order ---------------------------
+
+/** A sections list from `spec`, e.g. "todo odd !rdd": each id in that order, `!` hidden, the rest after them shown. */
+const sectionsOf = async (spec: string) => (await import("../lib/look.ts")).normalizeLook({ sections: spec.split(" ").map((word) => ({ id: word.replace(/^!/, ""), shown: !word.startsWith("!") })) }).sections;
+const railTitles = (lines: string[]) => lines.map(plain).map((line) => line.replace(/^[│ ]+?(?=╭)/, "")).filter((line) => line.startsWith("╭─ ")).map((line) => line.slice(3).split(" ")[0]);
+const everySection = (): PanelModel => ({ ...clone(lookModel), ci: passedCi() });
+
+test("look-more S6 S7 today's sections, given or omitted, draw byte for byte today's panel, rail and /dock, short screens too", async () => {
+	const { DEFAULT_SECTIONS } = await import("../lib/look.ts");
+	const model = everySection();
+	assert.deepEqual(railTitles(renderPanel(model, 55)), ["session", "heads-up", "ODD", "RDD", "CI", "agents", "todo", "changes"], "today's order");
+	for (const frames of ["faded", "classic", "none"] as const) {
+		for (const maxRows of [undefined, 60, 40, 25, 3]) {
+			assert.deepEqual(renderPanel(model, 55, { frames, maxRows, sections: DEFAULT_SECTIONS }), renderPanel(model, 55, { frames, maxRows }), `panel ${frames} ${maxRows}`);
+			assert.deepEqual(renderRail(model, 57, { frames, maxRows, sections: DEFAULT_SECTIONS }), renderRail(model, 57, { frames, maxRows }), `rail ${frames} ${maxRows}`);
+		}
+		assert.deepEqual(renderDock(model, 60, 30, 4, { frames, sections: DEFAULT_SECTIONS }), renderDock(model, 60, 30, 4, { frames }), `dock ${frames}`);
+	}
+	assert.deepEqual(renderPanel(samplePanelModel, 47, { sections: DEFAULT_SECTIONS }), renderPanel(samplePanelModel, 47));
+});
+
+test("look-more S6 a hidden section never draws, even with data: heads-up, RDD and CI with rows; todo, even the empty one; session stays first", async () => {
+	const model = everySection();
+	assert.deepEqual(railTitles(renderPanel(model, 55, { sections: await sectionsOf("!heads-up !rdd !ci") })), ["session", "ODD", "agents", "todo", "changes"]);
+	const lines = renderPanel(model, 55, { sections: await sectionsOf("!heads-up !rdd !ci") }).map(plain);
+	assert.ok(!lines.some((line) => line.includes("1 commit not pushed") || line.includes("e6f1ffd")), "none of their rows");
+	assert.deepEqual(railTitles(renderPanel(model, 55, { sections: await sectionsOf("!todo") })), ["session", "heads-up", "ODD", "RDD", "CI", "agents", "changes"]);
+	const empty = { session: { project: "p" } };
+	assert.deepEqual(railTitles(renderPanel(empty, 55)), ["session", "ODD", "todo"], "today: the empty todo and the ready ODD always draw");
+	assert.deepEqual(railTitles(renderPanel(empty, 55, { sections: await sectionsOf("!todo !odd") })), ["session"], "hidden, not even empty");
+	assert.ok(!renderPanel(empty, 55, { sections: await sectionsOf("!todo") }).map(plain).some((line) => line.includes(NO_TASKS)));
+	assert.deepEqual(railTitles(renderPanel(model, 55, { sections: await sectionsOf("!heads-up !odd !rdd !ci !agents !todo !changes") })), ["session"], "all hidden: session alone");
+	// A shown section keeps today's only-with-data rule.
+	assert.deepEqual(railTitles(renderPanel({ session: { project: "p" }, todo: lookModel.todo }, 55, { sections: await sectionsOf("changes heads-up ci") })), ["session", "ODD", "todo"], "no data, no box, even moved first");
+});
+
+test("look-more S6 the saved order applies: todo above ODD, changes first; each box is the same box, only moved", async () => {
+	const model = everySection();
+	const today = renderPanel(model, 55);
+	const swapped = renderPanel(model, 55, { sections: await sectionsOf("heads-up todo odd") });
+	assert.deepEqual(railTitles(swapped), ["session", "heads-up", "todo", "ODD", "RDD", "CI", "agents", "changes"]);
+	assert.deepEqual(sectionBody(swapped, "todo"), sectionBody(today, "todo"));
+	assert.deepEqual(sectionBody(swapped, "ODD"), sectionBody(today, "ODD"));
+	assert.equal(swapped.length, today.length, "nothing added or lost");
+	const reversed = await sectionsOf("changes todo agents ci rdd odd heads-up");
+	assert.deepEqual(railTitles(renderPanel(model, 55, { sections: reversed })), ["session", "changes", "todo", "agents", "CI", "RDD", "ODD", "heads-up"]);
+	for (const frames of ["classic", "none"] as const) {
+		const lines = renderPanel(model, 55, { frames, sections: reversed }).map(plain);
+		const at = (text: string) => lines.findIndex((line) => line.includes(text));
+		assert.ok(at("session") < at("changes") && at("changes") < at("todo ") && at("todo ") < at("ODD") && at("ODD") < at("heads-up"), `${frames}: the order`);
+	}
+	const dock = renderDock(model, 60, 200, 0, { sections: reversed }).lines;
+	assert.deepEqual(railTitles(dock), ["session", "changes", "todo", "agents", "CI", "RDD", "ODD", "heads-up"], "/dock takes the order");
+	assert.deepEqual(railTitles(renderDock(model, 60, 200, 0, { sections: await sectionsOf("!rdd !changes") }).lines), ["session", "heads-up", "ODD", "CI", "agents", "todo"], "/dock hides them");
+	assert.deepEqual(railTitles(renderRail(model, 57, { maxRows: 80, sections: await sectionsOf("!ci todo") })), ["session", "todo", "heads-up", "ODD", "RDD", "agents", "changes"], "the rail too");
+});
+
+test("look-more S6 short screens drop by section, not by place: changes moved first still drops first, then the passed CI, then RDD", async () => {
+	const model = everySection();
+	const sections = await sectionsOf("changes rdd ci heads-up odd agents todo");
+	const full = renderPanel(model, 58, { sections });
+	assert.deepEqual(railTitles(full), ["session", "changes", "RDD", "CI", "heads-up", "ODD", "agents", "todo"]);
+	const noSpacers = renderPanel(model, 58, { sections, maxRows: full.length - 1 });
+	assert.ok(noSpacers.length < full.length && !noSpacers.map(plain).some(isSpacer), "the spacers go first");
+	const noChanges = renderPanel(model, 58, { sections, maxRows: noSpacers.length - 1 });
+	assert.deepEqual(railTitles(noChanges), ["session", "RDD", "CI", "heads-up", "ODD", "agents", "todo"], "then changes, wherever it is");
+	const noCi = renderPanel(model, 58, { sections, maxRows: noChanges.length - 1 });
+	assert.deepEqual(railTitles(noCi), ["session", "RDD", "heads-up", "ODD", "agents", "todo"], "then the passed CI");
+	const noRdd = renderPanel(model, 58, { sections, maxRows: noCi.length - 1 });
+	assert.deepEqual(railTitles(noRdd), ["session", "heads-up", "ODD", "agents", "todo"], "then RDD");
+	assert.deepEqual(renderPanel(model, 58, { sections, maxRows: 3 }), noRdd, "nothing else drops");
+	// A hidden section takes no rows, so the panel fits sooner.
+	const hidden = renderPanel(model, 58, { sections: await sectionsOf("!changes") });
+	assert.equal(hidden.length, full.length - 3, "the changes box (title, one file, bottom) is gone");
+	assert.deepEqual(renderPanel(model, 58, { sections: await sectionsOf("!changes"), maxRows: hidden.length }), hidden, "it fits as it is, spacers and all");
+});
+
+// --- skills (skills-view S1-S3) ---------------------------------------------------
+
+type Skill = NonNullable<PanelModel["session"]["skills"]>["list"][number];
+const skill = (name: string, scope: Skill["scope"], description?: string): Skill => ({ name, scope, ...(description !== undefined ? { description } : {}) });
+/** The user's 25: 16 from Pi packages, 9 from ~/.agents/skills. */
+const TWENTY_FIVE: Skill[] = [...Array.from({ length: 16 }, (_, index) => skill(`p${index}`, "package")), ...Array.from({ length: 9 }, (_, index) => skill(`u${index}`, "user"))];
+const RAIL_SKILLS: Skill[] = [
+	skill("gentle-ai", "package", "Gentle AI harness discipline."),
+	skill("branch-pr", "package", "Prepare pull requests."),
+	skill("chained-pr", "package"),
+	skill("judgment-day", "package"),
+	skill("tui-design", "package"),
+	skill("btw", "user", "Side conversations with /btw."),
+	skill("go-testing", "user"),
+];
+/** The plain session rows from the skills row on, trailing padding cut. */
+const skillRows = (lines: string[]) => {
+	const body = sectionBody(lines, "session");
+	return body.slice(body.findIndex((line) => line.startsWith("│ skills"))).map((line) => line.replace(/ +│$/, ""));
+};
+const withSkills = (skills: PanelModel["session"]["skills"], session: PanelModel["session"] = { project: "p" }): PanelModel => ({ session: { ...session, skills } });
+
+test("skills row, folded: `skills ▸ N loaded · N package · N user` last in session, each count in its scope color (S1)", () => {
+	const lines = renderPanel(withSkills({ list: TWENTY_FIVE }, ART_SESSION), 47);
+	const body = sectionBody(lines, "session");
+	assert.match(body.at(-1)!, /^│ skills   ▸ 25 loaded · 16 package · 9 user +│$/, "the last session row");
+	const raw = lines.find((line) => plain(line).startsWith("│ skills"))!;
+	assert.ok(raw.includes(`${fgCode(palette.muted)}skills   `), "muted key");
+	assert.ok(raw.includes(`${fgCode(palette.teal)}▸`), "▸ in the session teal");
+	assert.ok(raw.includes(`${fgCode(palette.lilac)}16 package`), "package lilac");
+	assert.ok(raw.includes(`${fgCode(palette.blue)}9 user`), "user blue");
+	assert.ok(raw.includes(`${fgCode(palette.muted)} loaded`), "muted loaded");
+	const mixed = renderPanel(withSkills({ list: [skill("local", "project"), skill("btw", "user"), skill("gd", "package")] }), 56);
+	assert.deepEqual(skillRows(mixed), ["│ skills   ▸ 3 loaded · 1 package · 1 user · 1 project"], "package, user, project order");
+	assert.ok(mixed.find((line) => plain(line).startsWith("│ skills"))!.includes(`${fgCode(palette.green)}1 project`), "project green");
+	assert.deepEqual(skillRows(renderPanel(withSkills({ list: [skill("a", "user"), skill("b", "user")] }), 47)), ["│ skills   ▸ 2 loaded · 2 user"], "an empty scope has no count");
+});
+
+test("skills row: the scope counts drop from the right when the row does not fit, then the row is cut (S1)", () => {
+	assert.deepEqual(skillRows(renderPanel(withSkills({ list: TWENTY_FIVE }), 40)), ["│ skills   ▸ 25 loaded · 16 package"], "40: the user count drops");
+	assert.deepEqual(skillRows(renderPanel(withSkills({ list: TWENTY_FIVE }), 34)), ["│ skills   ▸ 25 loaded"], "34: every count drops");
+	assert.deepEqual(skillRows(renderPanel(withSkills({ list: TWENTY_FIVE }), 20)), ["│ skills   ▸ 25 l…"], "20: cut");
+});
+
+test("skills row: none loaded is a muted `skills none loaded`, unfolded or not; unreadable skills draw no row (S1)", () => {
+	for (const open of [false, true]) {
+		const lines = renderPanel(withSkills({ list: [], open }), 47);
+		assert.deepEqual(skillRows(lines), ["│ skills   none loaded"], `open ${open}`);
+		assert.ok(lines.find((line) => plain(line).startsWith("│ skills"))!.includes(`${fgCode(palette.muted)}none loaded`), "muted");
+	}
+	assert.ok(!renderPanel({ session: { project: "p" } }, 47).map(plain).some((line) => line.includes("skills")), "no skills: no row");
+	assert.ok(!renderDock({ session: { project: "p" } }, 62, 40).lines.map(plain).some((line) => line.includes("skills")), "nor in /dock");
+});
+
+test("skills absent: the session rows are exactly today's; present: one row more at the end, the rest unchanged (S1 preserve)", () => {
+	for (const width of [55, 47, 34]) {
+		const before = sectionBody(renderPanel({ session: ART_SESSION, footer: { cost: 0.127 } }, width), "session");
+		if (width > 34) assert.deepEqual(before.map((line) => line.trim().split(/ +/)[1]), ["project", "context", "profile", "memory", "mcp"], `${width}: today's rows`);
+		const after = sectionBody(renderPanel({ session: { ...ART_SESSION, skills: { list: TWENTY_FIVE } }, footer: { cost: 0.127 } }, width), "session");
+		assert.deepEqual(after.slice(0, -1), before, `${width}: the rows above the skills row unchanged`);
+		assert.ok(after.at(-1)!.startsWith("│ skills"));
+	}
+});
+
+test("skills unfolded in the rail: ▾, then one row per scope in package, user, project order with its names comma-separated, wrapped under the first name; empty scopes left out (S2)", () => {
+	const lines = renderPanel(withSkills({ list: RAIL_SKILLS, open: true }), 47);
+	assert.deepEqual(skillRows(lines), [
+		"│ skills   ▾ 7 loaded · 5 package · 2 user",
+		"│          package gentle-ai, branch-pr,",
+		"│                  chained-pr, judgment-day,",
+		"│                  tui-design",
+		"│          user    btw, go-testing",
+	]);
+	const raw = lines.filter((line) => /^│ (skills| {9}\S)/.test(plain(line)));
+	assert.ok(raw[0].includes(`${fgCode(palette.teal)}▾`), "▾ in the session teal");
+	assert.ok(raw[1].includes(`${fgCode(palette.lilac)}package`), "package word lilac");
+	assert.ok(raw[1].includes(`${fgCode(palette.text)}gentle-ai`), "names in the text color");
+	assert.ok(raw[2].includes(`${fgCode(palette.blue)}user`), "user word blue");
+	assert.ok(!lines.map(plain).some((line) => line.includes("harness")), "the rail shows no descriptions");
+	const mixed = renderPanel(withSkills({ list: [skill("local", "project"), skill("btw", "user"), skill("gd", "package"), skill("zz", "project")], open: true }), 47);
+	assert.deepEqual(skillRows(mixed).slice(1), ["│          package gd", "│          user    btw", "│          project local, zz"], "Pi's order inside a scope, scopes in their order");
+	assert.ok(mixed.some((line) => line.includes(`${fgCode(palette.green)}project`)), "project word green");
+});
+
+test("skills unfolded: every row fits every rail width, a name too long for the row is cut (S2)", () => {
+	const list = [...RAIL_SKILLS, skill("a-skill-name-far-too-long-for-any-rail-row-at-all", "project", "x")];
+	const rows = skillRows(renderPanel(withSkills({ list, open: true }), 47));
+	assert.equal(rows.at(-1), "│          project a-skill-name-far-too-long…", "cut with an ellipsis");
+	for (const width of [58, 55, 47, 40, 34, 30, 20, 14, 12, 5, 1]) {
+		for (const open of [false, true]) {
+			for (const line of renderPanel(withSkills({ list, open }), width)) assert.ok(visibleWidth(line) <= width, `${width} open ${open}: ${plain(line)}`);
+			for (const line of renderDock(withSkills({ list, open }), width, 40).lines) assert.ok(visibleWidth(line) <= width, `/dock ${width} open ${open}: ${plain(line)}`);
+		}
+	}
+});
+
+test("/dock unfolded: one row per skill under its scope's header, the name then its description muted, cut to the width; folded only the ▸ row (S3)", () => {
+	const list = [skill("gentle-design", "package", "Design a screen, mockup, landing page or UI directions as HTML artboards."), skill("btw", "user", "Side conversations."), skill("go-testing", "user")];
+	const open = renderDock(withSkills({ list, open: true }), 62, 60).lines;
+	const rows = skillRows(open.map((line) => line.trim()));
+	assert.deepEqual(rows, [
+		"│ skills   ▾ 3 loaded · 1 package · 2 user",
+		"│          package  1",
+		"│            gentle-design  Design a screen, mockup, land…",
+		"│          user  2",
+		"│            btw            Side conversations.",
+		"│            go-testing",
+	]);
+	const raw = open.find((line) => plain(line).includes("gentle-design"))!;
+	assert.ok(raw.includes(`${fgCode(palette.text)}gentle-design`), "name in the text color");
+	assert.ok(raw.includes(`${fgCode(palette.muted)}Design a screen`), "description muted");
+	assert.ok(open.some((line) => line.includes(`${fgCode(palette.lilac)}package`)), "scope header in its color");
+	const folded = skillRows(renderDock(withSkills({ list }), 62, 60).lines.map((line) => line.trim()));
+	assert.deepEqual(folded, ["│ skills   ▸ 3 loaded · 1 package · 2 user"], "folded: no names nor descriptions");
+});
+

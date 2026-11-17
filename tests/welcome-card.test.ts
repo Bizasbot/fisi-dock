@@ -4,6 +4,7 @@ import test from "node:test";
 import { renderWelcomeCard, shellVersion, WELCOME_CARD_WIDTH } from "../lib/welcome-card.ts";
 import { visibleWidth } from "../lib/text.ts";
 import { LOGO_WIDTH, renderLogo } from "../lib/logo.ts";
+import { fgCode, palette } from "../lib/palette.ts";
 
 const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -81,4 +82,20 @@ test("narrow screens keep the plain two lines, no wordmark (S1)", () => {
 	const lines = renderWelcomeCard({ version: "4.6.0", project: "app", branch: "main" }, 33).map(plain);
 	assert.equal(lines.length, 2);
 	assert.ok(lines.every((line) => !/[⠀-⣿╭│╰]/.test(line)));
+});
+
+test("the title names Fisi Dock's version, muted after the pink brand; the version drops before the brand when the row is short", () => {
+	const info = { version: "4.7.0-main", dockVersion: "0.5.0", project: "my-app", branch: "main" };
+	// The title row's text inside the frame (the card is width - 6 columns inside).
+	const titleAt = (width: number, at = info) => {
+		const line = renderWelcomeCard(at, width).find((row) => plain(row).includes("Gentle Shell"))!;
+		return { raw: line, text: plain(line).replace(/^ *│ {2}/, "").replace(/ {2}│ *$/, "") };
+	};
+	assert.match(titleAt(101).text, /^Gentle Shell 4\.7\.0-main +with Fisi Dock 0\.5\.0$/, "both versions on the card");
+	assert.ok(titleAt(101).raw.includes(`${fgCode(palette.pink)}with Fisi Dock`), "brand pink");
+	assert.ok(titleAt(101).raw.includes(`${fgCode(palette.muted)} 0.5.0`), "version muted");
+	assert.equal(titleAt(51).text, "Gentle Shell 4.7.0-main  with Fisi Dock 0.5.0", "exactly enough room for both");
+	assert.equal(titleAt(50).text, "Gentle Shell 4.7.0-main       with Fisi Dock", "one column short: the version goes first");
+	assert.equal(titleAt(44).text.trimEnd(), "Gentle Shell 4.7.0-main", "then the brand");
+	assert.match(titleAt(101, { ...info, dockVersion: undefined }).text, /^Gentle Shell 4\.7\.0-main +with Fisi Dock$/, "no version read: the brand alone");
 });

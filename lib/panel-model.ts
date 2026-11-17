@@ -22,6 +22,8 @@ export interface SessionInfo {
 	mcp?: McpServerInfo[];
 	/** Engram, the memory row of the connections group (lib/memory.ts); no row while absent (Pi's tool list unreadable). */
 	memory?: MemoryInfo;
+	/** The skills Pi loaded (skills-view S1, lib/skills.ts), the last session row; no row while absent (Pi's command list unreadable). */
+	skills?: SkillsInfo;
 	/** Shell-PAMC / CLIProxyAPI synced accounts and currently used account (lib/pamc.ts). */
 	pamc?: PamcInfo;
 }
@@ -34,6 +36,25 @@ export interface PamcInfo {
 	/** Currently or most recently used account identifier. */
 	current?: string;
 	state: "connected" | "unreachable" | "missing";
+}
+
+/** Where a loaded skill came from (skills-view S4): a Pi package, the user's own skills, or this project's. */
+export type SkillScope = "package" | "user" | "project";
+
+export interface SkillInfo {
+	/** Its name without Pi's `skill:` command prefix. */
+	name: string;
+	scope: SkillScope;
+	description?: string;
+}
+
+export interface SkillsInfo {
+	/** In Pi's order; [] is none loaded (a muted `none loaded` row). */
+	list: SkillInfo[];
+	/** Unfolded by /skills (S2): the names by scope in the rail, one row per skill with its description in /dock (S3). */
+	open?: boolean;
+	/** The shortcut that toggles the row (S7), shown muted at its end; absent when Pi could not register one. */
+	key?: string;
 }
 
 export interface MemoryInfo {
