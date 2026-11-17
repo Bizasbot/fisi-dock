@@ -1,3 +1,4 @@
+import "./helpers/palette-default.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { samplePanelModel, type PanelModel } from "../lib/panel-model.ts";

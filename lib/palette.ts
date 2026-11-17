@@ -76,12 +76,20 @@ export function syncPaletteFromDisk(): boolean {
 	let nextAccent: Rgb | null = null;
 	let nextDeep: Rgb | null = null;
 
+	// FISI_DOCK_PALETTE=default pins the shipped gentleman pink and skips the disk, so tests
+	// do not depend on the local palette. Unset (the runtime default), the disk decides.
+	const pinned = process.env.FISI_DOCK_PALETTE?.trim().toLowerCase() === "default";
+	if (pinned) {
+		nextAccent = KNOWN_TAG_PALETTES.default.accent;
+		nextDeep = KNOWN_TAG_PALETTES.default.deep;
+	}
+
 	const themesDir = resolveThemesDir();
 
 	// 1. Check dedicated active-palette.json
 	try {
 		const activePath = join(themesDir, "active-palette.json");
-		if (existsSync(activePath)) {
+		if (!pinned && existsSync(activePath)) {
 			const data = JSON.parse(readFileSync(activePath, "utf8"));
 			if (typeof data.accent === "string") {
 				nextAccent = parseHex(data.accent);

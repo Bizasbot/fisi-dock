@@ -1,3 +1,4 @@
+import "./helpers/palette-default.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderWelcomeCard, shellVersion, WELCOME_CARD_WIDTH } from "../lib/welcome-card.ts";

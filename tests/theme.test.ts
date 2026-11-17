@@ -1,5 +1,6 @@
+import "./helpers/palette-default.ts";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const read = (path: string) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
@@ -36,11 +37,14 @@ test("the theme defines every color role and each one resolves to a hex color", 
 
 test("selection is pink-tinted so the chosen option stands out (S10)", () => {
 	assert.equal(theme.vars[theme.colors.selectedBg], "#2a2228");
-	assert.equal(theme.vars[theme.colors.accent], "#f5388e", "the vivid pink (S4)");
+	// The accent follows the palette: the shipped theme carries the default gentleman pink #F43888.
+	assert.equal(theme.vars[theme.colors.accent].toLowerCase(), "#f43888", "the gentleman pink accent");
 });
 
 test("the package ships the theme folder like Gentle Shell does", () => {
-	assert.deepEqual(manifest.pi.themes, ["./themes"]);
+	// Not the bare folder: themes/ also holds the palette's active-palette.json, which is not a Pi theme.
+	assert.deepEqual(manifest.pi.themes, ["./themes/Fisi-Dock.json"]);
+	assert.ok(existsSync(new URL("../themes/Fisi-Dock.json", import.meta.url)));
 });
 
 // S47: Grok palette measured from the user's screenshot (text, muted, amber, frame).
@@ -61,13 +65,17 @@ test("Grok palette: theme and panel share text #e1e1e1, muted #6c6c6c; the theme
 test("theme accents are the vivid version of the panel's pastels; neutrals and backgrounds stay (S4)", async () => {
 	const { palette, vivid } = await import("../lib/palette.ts");
 	const hex = (rgb: readonly number[]) => `#${rgb.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
-	const accents = { pink: "#f5388e", deepPink: "#f53894", teal: "#38e3f5", coral: "#f55a38", amber: "#f5a838", lilac: "#9464f7", green: "#38f538", blue: "#4c76f6", red: "#f53838" } as const;
+	// pink and deepPink are the dynamic accent slots (lib/palette.ts syncs them from the palette), so the
+	// shipped theme carries the default gentleman pink #F43888 instead of a vivid() of a static pastel.
+	assert.equal(theme.vars.pink.toLowerCase(), "#f43888", "pink");
+	assert.equal(theme.vars.deepPink.toLowerCase(), "#f43888", "deepPink");
+	const accents = { teal: "#38e3f5", coral: "#f55a38", amber: "#f5a838", lilac: "#9464f7", green: "#38f538", blue: "#4c76f6", red: "#f53838" } as const;
 	for (const [name, value] of Object.entries(accents)) {
 		assert.equal(theme.vars[name], value, name);
 		assert.equal(theme.vars[name], hex(vivid(palette[name as keyof typeof accents])), `${name} is vivid(${hex(palette[name as keyof typeof accents])})`);
 	}
 	assert.deepEqual(
 		Object.fromEntries(Object.entries(theme.vars).filter(([name]) => !(name in accents))),
-		{ bg: "#161616", bgBar: "#1f1f1f", bgHighlight: "#262626", border: "#2a2a2a", borderSubtle: "#222222", text: "#e1e1e1", muted: "#6c6c6c", dim: "#6b6b6b", pinkSelection: "#2a2228", diffAddedBg: "#24321f", toolErrorBg: "#2e1a1d" },
+		{ bg: "#161616", bgBar: "#1f1f1f", bgHighlight: "#262626", border: "#2a2a2a", borderSubtle: "#222222", text: "#e1e1e1", muted: "#6c6c6c", dim: "#6b6b6b", pink: theme.vars.pink, deepPink: theme.vars.deepPink, pinkSelection: "#2a2228", diffAddedBg: "#24321f", toolErrorBg: "#2e1a1d" },
 	);
 });
