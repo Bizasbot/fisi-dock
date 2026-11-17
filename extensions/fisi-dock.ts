@@ -35,6 +35,7 @@ import { DEFAULT_MODEL_PRICES, estimateSessionCost, registryPrices, type ModelFi
 import { createWaveClock, type WaveClock } from "../lib/label-wave.ts";
 import { createLogoClock, type LogoClock } from "../lib/logo-clock.ts";
 import { getPaletteToken, syncPaletteFromDisk, watchPalette } from "../lib/palette.ts";
+import { renderWorkingRow } from "../lib/working-row.ts";
 import { createPromptBox, type EditorHost, type PromptBoxInstall } from "../lib/prompt-box.ts";
 import { renderPromptLine } from "../lib/prompt-line.ts";
 import { reduceReviews, reviewSnapshot, withTrail, type RddRow } from "../lib/rdd.ts";
@@ -51,6 +52,7 @@ import { renderWelcomeCard, shellVersion } from "../lib/welcome-card.ts";
 const WIDGET_KEY = "fisi-dock";
 const PROMPT_LINE_KEY = "fisi-dock-prompt-line";
 const STRIP_KEY = "fisi-dock-strip";
+const WORKING_KEY = "fisi-dock-working";
 const STATUS_SLOT = "footer";
 /** Gentle Shell's startup banner command: its presence says the rose banner is there to replace. */
 const GENTLE_BANNER_COMMAND = "gentle:banner";
@@ -646,6 +648,8 @@ interface LiveSession {
 	permissionMode(): string | undefined;
 	/** A run settled (true) or a new request started (false): todo-left warning. */
 	setSettled(settled: boolean): void;
+	/** When the current run started (ms), undefined while idle: the working row's elapsed counter. */
+	runStartedAt(): number | undefined;
 	/** A tool started: the review trail (S62). */
 	toolStart(event: { toolName?: string; toolCallId?: string; args?: unknown }): void;
 	toolEnd(event: { toolName?: string; toolCallId?: string; args?: unknown; isError?: boolean; result?: unknown }): void;
@@ -721,6 +725,8 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext, look: () => Look, sk
 	const subagents = createSubagentTracker(sessionId, Date.now);
 	const presenceHome = () => agentHomeDir(process.env, attempt(() => homedir()) ?? "");
 	let jobs: LiveParts["agents"];
+	/** The working row's start: agent_start until agent_settled. */
+	let runStartedAt: number | undefined;
 	/** The ODD tracker's hook, set once it exists: a step held past agent_end closes when no subagent runs (S91). */
 	let agentsChanged = () => {};
 	const subagentsBusy = () => subagents.agents(Date.now()).some((task) => task.state === "running" || task.state === "queued" || task.state === "waiting");
@@ -1065,7 +1071,10 @@ function startLive(pi: ExtensionAPI, ctx: ExtensionContext, look: () => Look, sk
 			}).catch(() => {});
 		},
 		permissionMode: () => permissionMode,
+		runStartedAt: () => (store.runActive() ? runStartedAt : undefined),
 		setSettled: (settled) => {
+			// A new request inside an unsettled run (retry, queued work) keeps the first start.
+			runStartedAt = settled ? undefined : (runStartedAt ?? Date.now());
 			apply({ runSettled: settled });
 			// No tool call is in flight once the run settled: a subagent call still unmatched is stale (S87).
 			if (settled && attempt(() => subagents.settle()) === true) syncAgents();
@@ -1445,6 +1454,21 @@ export default function fisiDock(pi: ExtensionAPI): void {
 			},
 			{ placement: "aboveEditor" },
 		);
+		// The canvas working row (gentle-shell-canvas-parity S4): `✿ TRABAJANDO ▰▰▰▰▰▰ 0:42 ·
+		// esc para interrumpir` right above the prompt box while a run is active. It paints the
+		// wave clock's moment and adds no timer: the wave clock's frames repaint it.
+		ctx.ui.setWidget(
+			WORKING_KEY,
+			(tui: Host) => ({
+				render: (width: number) => {
+					const terminal = tui.terminal as Record<symbol, unknown> | undefined;
+					if (live !== session || !terminal?.[SIDEBAR_STATE]) return [];
+					return renderWorkingRow({ startedAt: session.runStartedAt(), now: Date.now(), width, waveAt: session.wave.at(), colors: look.colors, accent: look.accent });
+				},
+				invalidate() {},
+			}),
+			{ placement: "aboveEditor" },
+		);
 		ctx.ui.setWidget(WIDGET_KEY, (tui: Host) => {
 			currentRailHost = tui;
 			// Live content; the panel paints with its own design palette, not Pi
@@ -1655,6 +1679,7 @@ export default function fisiDock(pi: ExtensionAPI): void {
 					ctx.ui.setWidget(WIDGET_KEY, undefined);
 					ctx.ui.setWidget(PROMPT_LINE_KEY, undefined);
 					ctx.ui.setWidget(STRIP_KEY, undefined);
+					ctx.ui.setWidget(WORKING_KEY, undefined);
 				} catch {
 					// Deliberately ignored: the UI is already gone, and teardown must never throw into Pi.
 				}
@@ -1806,7 +1831,7 @@ export default function fisiDock(pi: ExtensionAPI): void {
 			setLoaded(next);
 			if (next && ctx.hasUI) start(ctx);
 			// A widget that never rendered left no release behind: remove ours here too.
-			if (!next) for (const key of [WIDGET_KEY, PROMPT_LINE_KEY, STRIP_KEY]) attempt(() => ctx.ui.setWidget(key, undefined));
+			if (!next) for (const key of [WIDGET_KEY, PROMPT_LINE_KEY, STRIP_KEY, WORKING_KEY]) attempt(() => ctx.ui.setWidget(key, undefined));
 			// Pi's setter reports { success }; a setter that throws counts as not
 			// changed too. A remembered theme Pi no longer knows is not tried, since
 			// Pi's setter falls to its system theme on an unknown name.

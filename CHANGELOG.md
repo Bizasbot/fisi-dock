@@ -5,6 +5,7 @@
 ### Added
 
 - A narrow rail: when the host gives the side panel fewer than 44 columns it draws every section at most 40 columns wide (rows cut with an ellipsis) instead of nothing.
+- The canvas working row: while a request runs, one row right above the prompt box reads `✿ TRABAJANDO ▰▰▰▰▰▰ 0:42 · esc para interrumpir` (turning petal, wave label and a colored bar on the prompt box clock, the elapsed time from the request start, the hint). A narrow screen drops the hint, then the bar, then shortens the label; nothing shows while idle.
 
 ### Changed
 
