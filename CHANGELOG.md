@@ -6,6 +6,7 @@
 
 - A narrow rail: when the host gives the side panel fewer than 44 columns it draws every section at most 40 columns wide (rows cut with an ellipsis) instead of nothing.
 - The canvas working row: while a request runs, one row right above the prompt box reads `✿ TRABAJANDO ▰▰▰▰▰▰ 0:42 · esc para interrumpir` (turning petal, wave label and a colored bar on the prompt box clock, the elapsed time from the request start, the hint). A narrow screen drops the hint, then the bar, then shortens the label; nothing shows while idle.
+- Canvas chips under the prompt: the line under Gentle Shell's prompt adds the profile, `ODD on`, `RDD on`/`RDD off` and the context `43% · 86.7k/200k` after the mode, model and effort (the context amber from 70% and red from 90%), read from what the rail already holds. On a narrow screen the context drops first, then ODD and RDD, then the profile.
 
 ### Changed
 

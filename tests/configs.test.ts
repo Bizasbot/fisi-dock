@@ -309,7 +309,7 @@ test("S6 another language: a translated idle label drops its words for the label
 	await waitFor(() => rule(box(45)).includes("SUPER-YOLO"));
 	assert.equal(rule(box(45)), `╭─ ✿ ${"─".repeat(7)} ● SUPER-YOLO  opus-5.5 · high ─╮`, "idle: the petal keeps the labels");
 	assert.equal(rule(box(70)), `╭─ ✿ esperando entrada ${"─".repeat(14)} ● SUPER-YOLO  opus-5.5 · high ─╮`, "room for both: its words stay");
-	assert.deepEqual(surfaces["line under the prompt"](45), [], "the box carries the labels");
+	assert.ok(!(surfaces["line under the prompt"](45)[0] ?? "").includes("opus-5.5"), "the box carries the labels: under it only the chips");
 
 	prompt = { label: "trabajando…", scan: true, button: true };
 	assert.equal(rule(box(45)), "╭─ ✿ trabajando… ─── ● SUPER-YOLO opus-5.5 ─╮", "working: its words stay, the labels compact");
@@ -434,7 +434,7 @@ test("S6 a 30-column screen: every Fisi Dock surface fits, nothing throws, and e
 	assert.equal(at30.strip[0], "  ±1 file");
 	assert.equal(at30["prompt box"][0], `╭─ ✿ ${"─".repeat(9)} ● SUPER-YOLO ─╮`);
 	assert.deepEqual(at30["prompt box"].slice(1), [`│ › hola${" ".repeat(20)} │`, `╰${"─".repeat(28)}╯`]);
-	assert.deepEqual(at30["line under the prompt"], [], "the box carries the labels");
+	assert.ok(!(at30["line under the prompt"][0] ?? "").includes("opus-5.5"), "the box carries the labels: under it only the chips");
 	assert.equal(at30["/dock"].length, 36, "the whole overlay height");
 	assert.ok(at30["/dock"].some((line) => line.includes("session")) && /Esc to close/.test(at30["/dock"].at(-1)!));
 	await stop();

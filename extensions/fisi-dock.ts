@@ -29,7 +29,7 @@ import { computeModalDimensions as computeMcpDimensions, extractServerDetails, r
 import { readSessionProfile } from "../lib/profile.ts";
 import { createOddTracker, type OddTracker } from "../lib/odd-timeline.ts";
 import { readOrbMotion } from "../lib/orbs.ts";
-import { agentLive, renderAdaptiveRail, renderAgentsCard, renderDock, renderTodoCard } from "../lib/panel.ts";
+import { agentLive, formatTokens, renderAdaptiveRail, renderAgentsCard, renderDock, renderTodoCard } from "../lib/panel.ts";
 import type { PanelModel } from "../lib/panel-model.ts";
 import { DEFAULT_MODEL_PRICES, estimateSessionCost, registryPrices, type ModelFinder, type PriceRates } from "../lib/pricing.ts";
 import { createWaveClock, type WaveClock } from "../lib/label-wave.ts";
@@ -37,7 +37,7 @@ import { createLogoClock, type LogoClock } from "../lib/logo-clock.ts";
 import { getPaletteToken, syncPaletteFromDisk, watchPalette } from "../lib/palette.ts";
 import { renderWorkingRow } from "../lib/working-row.ts";
 import { createPromptBox, type EditorHost, type PromptBoxInstall } from "../lib/prompt-box.ts";
-import { renderPromptLine } from "../lib/prompt-line.ts";
+import { renderChipsLine, renderPromptLine, type PromptLineModel } from "../lib/prompt-line.ts";
 import { reduceReviews, reviewSnapshot, withTrail, type RddRow } from "../lib/rdd.ts";
 import { createReviewModeReader, gentleAiBinary, REVIEW_MODE_TIMEOUT_MS } from "../lib/rdd-mode.ts";
 import { trailEnd, trailStart, type ReviewTrail } from "../lib/rdd-detail.ts";
@@ -1381,6 +1381,22 @@ export default function fisiDock(pi: ExtensionAPI): void {
 			const model = ctx.model;
 			return { mode: session.permissionMode(), modelId: model?.id, effort: model?.reasoning ? pi.getThinkingLevel() : undefined };
 		};
+		// The canvas chips under the prompt (T7): the same labels plus what the rail already
+		// holds, read from its cached model (no new reads or timers): the profile and context
+		// of the session section, the RDD switch of its title, and ODD on once the ODD section
+		// has phases (Gentle Shell has no ODD switch to read, so there is no `off` chip: it
+		// stays out until a phase shows). The prompt box (S88) keeps `labels` alone.
+		const chipLabels = (): PromptLineModel => {
+			const { session: info, footer, odd } = session.store.model();
+			const tokens = info.tokensUsed !== undefined && info.tokensMax ? `${formatTokens(info.tokensUsed)}/${formatTokens(info.tokensMax)}` : undefined;
+			return {
+				...labels(),
+				profile: info.profile,
+				odd: odd && odd.steps.length > 0 ? "on" : undefined,
+				rdd: footer?.rdd,
+				context: info.contextPercent !== undefined ? { percent: info.contextPercent, ...(tokens ? { tokens } : {}) } : undefined,
+			};
+		};
 		// The prompt box (S88): with Gentle Shell's marked editor factory installed,
 		// a wrapper factory creates its editor and closes its panel-chrome rows into
 		// a box with the labels on the top rule, only while Gentle Shell's sidebar
@@ -1415,8 +1431,9 @@ export default function fisiDock(pi: ExtensionAPI): void {
 				render: (width: number) => {
 					const terminal = tui.terminal as Record<symbol, unknown> | undefined;
 					// Only with Gentle Shell; neither of our top rows (wide or narrow) shows the model.
-					if (live !== session || !terminal?.[SIDEBAR_STATE] || box.boxed()) return [];
-					return renderPromptLine(labels(), width, look.colors);
+					if (live !== session || !terminal?.[SIDEBAR_STATE]) return [];
+					// The box carries the mode, model and effort on its rule (S88): under it only the chips.
+					return box.boxed() ? renderChipsLine(chipLabels(), width, look.colors) : renderPromptLine(chipLabels(), width, look.colors);
 				},
 				invalidate() {},
 			}),

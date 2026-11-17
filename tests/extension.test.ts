@@ -257,7 +257,7 @@ test("without a host-ui answer (no Gentle Shell, an older one) the prompt line s
 	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true });
 	sim.emit("session_start");
 	const promptLine = sim.widgets.get("fisi-dock-prompt-line")!(sim.tui);
-	assert.ok(plain(promptLine.render(100)[0]).endsWith("opus-5.5 · high "));
+	assert.ok(plain(promptLine.render(100)[0]).includes("opus-5.5 · high"));
 	assert.ok(!plain(promptLine.render(100)[0]).includes("NORMAL"));
 	sim.emit("session_shutdown");
 });
@@ -280,7 +280,7 @@ function gentleEditorFactory(text = "hola") {
 }
 type EditorFactory = (tui: unknown, theme: unknown, keys: unknown) => { render(width: number): string[] };
 
-test("with Gentle Shell's marked editor, session_start wraps it: the editor paints the closed box with the labels, the prompt line paints nothing while it does, and shutdown gives Gentle Shell's factory back (S88)", () => {
+test("with Gentle Shell's marked editor, session_start wraps it: the editor paints the closed box with the labels, the prompt line paints only the chips while it does, and shutdown gives Gentle Shell's factory back (S88)", async () => {
 	const gentle = gentleEditorFactory();
 	const sim = simulate("E:\\DEV\\app", { ownsHost: () => true, editor: gentle });
 	sim.emit("session_start");
@@ -295,11 +295,12 @@ test("with Gentle Shell's marked editor, session_start wraps it: the editor pain
 		`╰${"─".repeat(58)}╯`,
 	]);
 	const promptLine = sim.widgets.get("fisi-dock-prompt-line")!(sim.tui);
-	assert.deepEqual(promptLine.render(100), [], "the box carries the labels: no line under it");
+	await waitFor(() => plain(promptLine.render(100)[0] ?? "").endsWith("40% · 400k/1M "));
+	assert.ok(!plain(promptLine.render(100)[0] ?? "").includes("opus-5.5"), "under the box only the chips: the box rule carries the model");
 	editor.render(12);
-	assert.ok(plain(promptLine.render(100)[0] ?? "").endsWith("opus-5.5 · high "), "the box did not fit: the line is the fallback");
+	assert.ok(plain(promptLine.render(100)[0] ?? "").includes("opus-5.5 · high"), "the box did not fit: the line is the fallback");
 	editor.render(60);
-	assert.deepEqual(promptLine.render(100), []);
+	assert.ok(!plain(promptLine.render(100)[0] ?? "").includes("opus-5.5"), "the box fits again: chips only");
 	sim.emit("session_shutdown");
 	assert.equal(sim.ctx.ui.getEditorComponent(), gentle, "Gentle Shell's factory restored");
 });
@@ -367,13 +368,13 @@ test("without the wide rail (narrow fullscreen) the top row is Fisi Dock's own a
 	assert.equal(header.handleMouse({ type: "click", button: "left", x: 2, y: 0, width: 64 }), undefined, "no click action");
 	console.log(`--- simulated narrow header, 64 and 40 columns\n${[...header.render(64), ...header.render(40)].map(plain).join("\n")}`);
 	// Our top row has no model: the model line under the prompt shows it (S8; hidden when the prompt frame has it).
-	assert.ok(plain(promptLine.render(100)[0]).endsWith("opus-5.5 · high "));
+	assert.ok(plain(promptLine.render(100)[0]).includes("opus-5.5 · high · 40% · 400k/1M"));
 	const narrowDigest = header.digest();
 
 	// Wide: Fisi Dock's path-only row and model line.
 	wide = true;
 	assert.equal(plain(header.render(100)[0]), " E:\\DEV\\app");
-	assert.ok(plain(promptLine.render(100)[0]).endsWith("opus-5.5 · high "));
+	assert.ok(plain(promptLine.render(100)[0]).includes("opus-5.5 · high · 40% · 400k/1M"));
 	assert.notEqual(header.digest(), narrowDigest);
 	sim.emit("session_shutdown");
 });

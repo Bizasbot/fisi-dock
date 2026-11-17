@@ -110,3 +110,103 @@ test("S4 soft colors: the mode bold in pastel red, the effort pastel blue; omitt
 	assert.ok(promptLineParts(model, "soft")[0].styled.includes(fgCode(palette.red)));
 	assert.ok(promptLineSteps(model, "soft")[0][2].styled.includes(fgCode(palette.blue)));
 });
+
+// T7 (S5): the canvas input-bar chips under the prompt:
+// `claude-bc · sonnet-5.5 · medium · ODD on · RDD off · 43% · 86.7k/200k`.
+const CHIPS = { modelId: "claude-sonnet-5-5", effort: "medium", profile: "claude-bc", odd: "on", rdd: "off", context: { percent: 43, tokens: "86.7k/200k" } } as const;
+const CHIP_TEXT = "claude-bc · sonnet-5.5 · medium · ODD on · RDD off · 43% · 86.7k/200k";
+
+test("T7 the line shows profile, model, effort, ODD, RDD and context in the canvas order", () => {
+	const [line] = plain(renderPromptLine(CHIPS, 100));
+	assert.equal(line, `${" ".repeat(100 - CHIP_TEXT.length - 1)}${CHIP_TEXT} `);
+	const withMode = plain(renderPromptLine({ ...CHIPS, mode: "yolo", rdd: "on" }, 120))[0];
+	assert.ok(withMode.endsWith("YOLO · claude-bc · sonnet-5.5 · medium · ODD on · RDD on · 43% · 86.7k/200k "), withMode);
+});
+
+test("T7 a chip without its data is left out; the old three parts stay as they were", () => {
+	assert.ok(plain(renderPromptLine({ ...CHIPS, profile: undefined }, 100))[0].endsWith("sonnet-5.5 · medium · ODD on · RDD off · 43% · 86.7k/200k "));
+	assert.ok(plain(renderPromptLine({ ...CHIPS, odd: undefined, rdd: undefined }, 100))[0].endsWith("claude-bc · sonnet-5.5 · medium · 43% · 86.7k/200k "));
+	assert.ok(plain(renderPromptLine({ ...CHIPS, context: undefined }, 100))[0].endsWith("medium · ODD on · RDD off "));
+	assert.ok(plain(renderPromptLine({ ...CHIPS, context: { percent: 43 } }, 100))[0].endsWith("RDD off · 43% "), "no token counts: the percent alone");
+	assert.ok(plain(renderPromptLine({ modelId: "claude-opus-5-5", effort: "high", profile: "" }, 60))[0].endsWith("opus-5.5 · high "), "a blank profile is no chip");
+	assert.deepEqual(renderPromptLine({ modelId: "claude-opus-5-5", effort: "high" }, 60), renderPromptLine({ modelId: "claude-opus-5-5", effort: "high", odd: undefined, rdd: undefined, context: undefined }, 60));
+	assert.deepEqual(renderPromptLine({ ...CHIPS, modelId: undefined }, 100), [], "still nothing without a model");
+});
+
+test("T7 colors: profile muted, RDD and ODD green on and dim off, context muted, amber from 70%, red from 90%", () => {
+	const [styled] = renderPromptLine(CHIPS, 100);
+	assert.ok(styled.includes(`${fgCode(palette.muted)}claude-bc`), "the profile muted");
+	assert.ok(styled.includes(`${fgCode(vivid(palette.green))}ODD on`), "ODD on green");
+	assert.ok(styled.includes(`${fgCode(palette.muted)}RDD off`), "RDD off dim");
+	assert.ok(!styled.includes(`${fgCode(vivid(palette.green))}RDD`), "RDD off is not green");
+	assert.ok(styled.includes(`${fgCode(palette.muted)}43%`), "the context muted under 70%");
+	const rdd = renderPromptLine({ ...CHIPS, rdd: "on" }, 100)[0];
+	assert.ok(rdd.includes(`${fgCode(vivid(palette.green))}RDD on`), "RDD on green");
+	const at = (percent: number) => renderPromptLine({ ...CHIPS, context: { percent, tokens: "1k/2k" } }, 100)[0];
+	assert.ok(at(69).includes(`${fgCode(palette.muted)}69%`));
+	assert.ok(at(70).includes(`${fgCode(vivid(palette.amber))}70%`), "amber at 70");
+	assert.ok(at(89).includes(`${fgCode(vivid(palette.amber))}89%`));
+	assert.ok(at(90).includes(`${fgCode(vivid(palette.red))}90%`), "red at 90");
+	assert.ok(at(100).includes(`${fgCode(vivid(palette.red))}100%`));
+	const soft = renderPromptLine({ ...CHIPS, rdd: "on", context: { percent: 95 } }, 100, "soft")[0];
+	assert.ok(soft.includes(`${fgCode(palette.green)}RDD on`) && soft.includes(`${fgCode(palette.red)}95%`), "soft: the plain pastels");
+});
+
+test("T7 compaction: no context, then no RDD/ODD, then no profile (spaced dots), then tight dots, then no effort, then the mode or model alone", () => {
+	const line = (width: number, model: object = CHIPS) => plain(renderPromptLine(model, width))[0];
+	assert.equal(line(CHIP_TEXT.length + 1), `${CHIP_TEXT} `);
+	assert.equal(line(CHIP_TEXT.length - 1), "claude-bc · sonnet-5.5 · medium · ODD on · RDD off ".padStart(CHIP_TEXT.length - 1), "context dropped first");
+	assert.equal(line(40), "claude-bc · sonnet-5.5 · medium ".padStart(40), "then RDD and ODD");
+	assert.equal(line(30), "sonnet-5.5 · medium ".padStart(30), "then the profile: the line of before the chips");
+	assert.equal(line(20), "sonnet-5.5 · medium ", "the S3 line, spaced, as it was");
+	assert.equal(line(19), "sonnet-5.5·medium ".padStart(19), "then S3: tight dots");
+	assert.equal(line(16), "sonnet-5.5 ".padStart(16), "then the effort");
+	assert.equal(line(11), "sonnet-5.5 ");
+	assert.equal(line(22, { ...CHIPS, mode: "super-yolo" }), "SUPER-YOLO·sonnet-5.5 ", "the mode stays beside the model");
+	assert.equal(line(14, { ...CHIPS, mode: "super-yolo" }), "SUPER-YOLO ".padStart(14), "the mode is the last to go");
+});
+
+for (const width of [20, 40, 60, 100, 160]) {
+	test(`T7 every chip line fits width ${width}`, () => {
+		const models = [CHIPS, { ...CHIPS, mode: "super-yolo", rdd: "on", context: { percent: 95, tokens: "190.5k/200k" } }, { ...CHIPS, profile: "a-very-long-profile-name (session)", modelId: "claude-opus-5-5-very-long-preview-build" }, { modelId: "gpt-5" }];
+		for (const model of models) {
+			for (const row of renderPromptLine(model, width)) assert.ok(visibleWidth(row) <= width, `${width}: ${JSON.stringify(row)}`);
+		}
+	});
+}
+
+test("T7 every width from 0 to 160 stays inside the screen", () => {
+	for (let width = 0; width <= 160; width++) {
+		for (const row of renderPromptLine({ ...CHIPS, mode: "auto" }, width)) assert.ok(visibleWidth(row) <= width, `${width}: ${JSON.stringify(row)}`);
+	}
+});
+
+test("T7 the prompt box top rule keeps its labels: the chips are not part of what the box paints", async () => {
+	const { promptLineSteps } = await import("../lib/prompt-line.ts");
+	const base = { mode: "super-yolo", modelId: "claude-opus-5-5", effort: "high" };
+	assert.deepEqual(promptLineSteps(base).map((step) => step.map((part) => part.plain)), [["SUPER-YOLO", "opus-5.5", "high"], ["SUPER-YOLO", "opus-5.5"], ["SUPER-YOLO"]]);
+	const kinds = promptLineSteps(CHIPS).map((step) => step.map((part) => part.kind).join(","));
+	assert.deepEqual(kinds, [
+		"profile,model,effort,odd,rdd,context",
+		"profile,model,effort,odd,rdd",
+		"profile,model,effort",
+		"model,effort",
+		"model",
+	]);
+});
+
+test("T7 room for the chips but not the trailing space: whole and flush, like the old line (S3)", () => {
+	assert.equal(plain(renderPromptLine(CHIPS, CHIP_TEXT.length))[0], CHIP_TEXT);
+});
+
+test("renderChipsLine: only the chips, right-aligned, compacted and never wider than the width (T7)", async () => {
+	const { renderChipsLine } = await import("../lib/prompt-line.ts");
+	const model = { modelId: "claude-opus-5-5", effort: "high", mode: "yolo", profile: "claude-bc", odd: "on" as const, rdd: "off" as const, context: { percent: 43, tokens: "86.7k/200k" } };
+	const strip = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+	const full = strip(renderChipsLine(model, 100)[0]);
+	assert.equal(full.trimStart(), "claude-bc · ODD on · RDD off · 43% · 86.7k/200k ");
+	assert.ok(!/opus|high|YOLO/.test(full), "the box rule has those");
+	assert.equal(strip(renderChipsLine(model, 40)[0]).trimStart(), "claude-bc · ODD on · RDD off ");
+	for (let width = 0; width <= 160; width++) for (const line of renderChipsLine(model, width)) assert.ok(strip(line).length <= width, `${width}`);
+	assert.deepEqual(renderChipsLine({ modelId: "x" }, 100), [], "no chip data: no line");
+});
