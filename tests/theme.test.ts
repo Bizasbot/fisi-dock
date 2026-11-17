@@ -42,7 +42,7 @@ test("selection is pink-tinted so the chosen option stands out (S10)", () => {
 
 test("the package ships the theme folder like Gentle Shell does", () => {
 	// Not the bare folder: themes/ also holds the palette's active-palette.json, which is not a Pi theme.
-	assert.deepEqual(manifest.pi.themes, ["./themes/Fisi-Dock.json"]);
+	assert.deepEqual(manifest.pi.themes, ["./themes/Fisi-Dock.json", "./themes/Fisi-Dock-Canvas.json"]);
 	assert.ok(existsSync(new URL("../themes/Fisi-Dock.json", import.meta.url)));
 });
 
