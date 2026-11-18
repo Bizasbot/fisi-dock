@@ -73,12 +73,12 @@ test("the rule row closes the box and carries Gentle Shell's label, then the mod
 	const rows = gentleRows(56, { text: ["hello"] });
 	const box = boxPromptRows(rows, 60, 0, LABELS);
 	assert.equal(box.boxed, true);
-	assert.equal(plain(box.rows[0]), "╭─ ✿ waiting for input ──── ● SUPER-YOLO  opus-5.5 · high ─╮");
+	assert.equal(plain(box.rows[0]), "╭─ ✿ prompt ─────────────── ● SUPER-YOLO  opus-5.5 · high ─╮");
 	for (const row of box.rows) assert.equal(visibleWidth(row), 60, plain(row));
 	const rule = box.rows[0];
 	assert.ok(rule.startsWith(`${gray}╭─ `), "the frame in Fisi Dock's gray");
 	assert.ok(rule.includes(PETAL), "Gentle Shell's own petal, with its colour");
-	assert.ok(rule.includes(gsLabel("waiting for input")), "Gentle Shell's own label, as it painted it");
+	assert.ok(rule.includes(gsLabel("prompt")), "Gentle Shell's own label, as it painted it");
 	assert.ok(rule.includes(`${fgCode(vivid(palette.red))}●`), "a vivid red dot before the mode");
 	assert.ok(rule.includes(`\x1b[1m${fgCode(vivid(palette.red))}SUPER-YOLO`), "the mode bold in vivid red, as the prompt line paints it");
 	assert.ok(rule.includes(`${fgCode(palette.muted)}opus-5.5`), "the model muted");
@@ -91,7 +91,7 @@ test("NORMAL mode shows no dot and no mode; an ODD phase label is carried as Gen
 	assert.equal(plain(box.rows[0]), `╭─ ✿ explore · 0:12 ${"─".repeat(21)} opus-5.5 · high ─╮`);
 	assert.ok(!box.rows[0].includes("●"));
 	const noEffort = boxPromptRows(gentleRows(56), 60, 0, { mode: "yolo", modelId: "gpt-5" });
-	assert.equal(plain(noEffort.rows[0]), `╭─ ✿ waiting for input ${"─".repeat(20)} ● YOLO  gpt-5 ─╮`);
+	assert.equal(plain(noEffort.rows[0]), `╭─ ✿ prompt ${"─".repeat(31)} ● YOLO  gpt-5 ─╮`);
 });
 
 test("the editor's invisible cursor markers take no columns: the right border stays at the edge (S88)", () => {
@@ -166,24 +166,25 @@ test("too tight for the right part: the mode, model and effort drop first, the b
 	const long = { modelId: "claude-opus-5-5-very-long-preview-build", effort: "high" };
 	const box = boxPromptRows(gentleRows(26, { text: ["hi"] }), 30, 0, long);
 	assert.equal(box.boxed, true);
-	assert.equal(plain(box.rows[0]), "╭─ ✿ waiting for input ──────╮");
+	assert.equal(plain(box.rows[0]), "╭─ ✿ prompt ─────────────────╮");
 	assert.deepEqual(box.rows.map(plain), [
-		"╭─ ✿ waiting for input ──────╮",
+		"╭─ ✿ prompt ─────────────────╮",
 		"│ › hi                       │",
 		"╰────────────────────────────╯",
 	]);
 	for (const row of box.rows) assert.equal(visibleWidth(row), 30);
 	// One column more than the right part needs is enough.
-	const fits = boxPromptRows(gentleRows(53), 57, 0, LABELS);
-	assert.equal(plain(fits.rows[0]), "╭─ ✿ waiting for input ─ ● SUPER-YOLO  opus-5.5 · high ─╮");
-	const short = boxPromptRows(gentleRows(52), 56, 0, LABELS);
+	// A long idle label of its own (Gentle Shell's own `waiting for input` is retitled `prompt`, S8).
+	const fits = boxPromptRows(gentleRows(53, { label: "esperando entrada" }), 57, 0, LABELS);
+	assert.equal(plain(fits.rows[0]), "╭─ ✿ esperando entrada ─ ● SUPER-YOLO  opus-5.5 · high ─╮");
+	const short = boxPromptRows(gentleRows(52, { label: "esperando entrada" }), 56, 0, LABELS);
 	assert.equal(plain(short.rows[0]), `╭─ ✿ ${"─".repeat(18)} ● SUPER-YOLO  opus-5.5 · high ─╮`, "one column less: the idle label's words drop first");
 });
 
 test("content rows get `│ ` and ` │`, padded to the width; the blank last row closes the box; a selection label stays on it (S88)", () => {
 	const box = boxPromptRows(gentleRows(36, { text: ["first", "", "third"] }), 40, 0, {});
 	assert.deepEqual(box.rows.map(plain), [
-		"╭─ ✿ waiting for input ────────────────╮",
+		"╭─ ✿ prompt ───────────────────────────╮",
 		"│ › first                              │",
 		"│                                      │",
 		"│   third                              │",
@@ -204,7 +205,7 @@ test("Gentle Shell's top rows and autocomplete rows are returned untouched, befo
 	assert.deepEqual(box.rows.slice(0, 2), rows.slice(0, 2), "top rows as Gentle Shell painted them");
 	assert.deepEqual(box.rows.slice(-2), rows.slice(-2), "autocomplete rows as Gentle Shell painted them");
 	assert.deepEqual(box.rows.slice(2, -2).map(plain), [
-		`╭─ ✿ waiting for input ${"─".repeat(26)}╮`,
+		`╭─ ✿ prompt ${"─".repeat(37)}╮`,
 		`│ › /do${" ".repeat(41)} │`,
 		`╰${"─".repeat(48)}╯`,
 	]);
@@ -213,18 +214,18 @@ test("Gentle Shell's top rows and autocomplete rows are returned untouched, befo
 
 test("Gentle Shell's hint stays after the labels; its `[ Panel ]` button is left out and the rule row keeps clicks (S88)", () => {
 	const hinted = boxPromptRows(gentleRows(76, { hint: "esc again to clear" }), 80, 0, LABELS);
-	assert.equal(plain(hinted.rows[0]), "╭─ ✿ waiting for input ──── ● SUPER-YOLO  opus-5.5 · high  esc again to clear ─╮");
+	assert.equal(plain(hinted.rows[0]), "╭─ ✿ prompt ─────────────── ● SUPER-YOLO  opus-5.5 · high  esc again to clear ─╮");
 	assert.ok(hinted.rows[0].includes(gsLabel("esc again to clear")), "the hint as Gentle Shell painted it");
 	assert.equal(hinted.buttonDropped, false);
 	const gentle = gentleRows(76, { button: true, hint: "INSERT" });
 	const box = boxPromptRows(gentle, 80, 0, LABELS);
-	assert.equal(plain(box.rows[0]), `╭─ ✿ waiting for input ${"─".repeat(16)} ● SUPER-YOLO  opus-5.5 · high  INSERT ─╮`);
+	assert.equal(plain(box.rows[0]), `╭─ ✿ prompt ${"─".repeat(27)} ● SUPER-YOLO  opus-5.5 · high  INSERT ─╮`);
 	assert.ok(box.rows[0].includes(gsLabel("INSERT")), "the vim mode as Gentle Shell painted it, without the button before it");
 	assert.equal(box.buttonDropped, true);
 	assert.equal(box.ruleShift, FRAME_COLUMNS / 2, "the rule shifts like a content row");
 	// A rule with only the button: nothing of Gentle Shell's is kept on the right.
 	const tight = boxPromptRows(gentleRows(36, { button: true }), 40, 0, {});
-	assert.equal(plain(tight.rows[0]), `╭─ ✿ waiting for input ${"─".repeat(16)}╮`);
+	assert.equal(plain(tight.rows[0]), `╭─ ✿ prompt ${"─".repeat(27)}╮`);
 	assert.equal(tight.buttonDropped, true);
 	assert.equal(boxPromptRows(gentleRows(56), 60, 0, LABELS).ruleShift, FRAME_COLUMNS / 2, "without a button the rule shifts like a content row");
 });
@@ -283,7 +284,7 @@ test("the wrapper creates Gentle Shell's editor, renders it four columns narrowe
 	const rows = editor.render(60);
 	assert.deepEqual(editor.widths, [56]);
 	assert.equal(plain(rows[0]), pad("work row", 56));
-	assert.equal(plain(rows[1]), "╭─ ✿ waiting for input ──── ● SUPER-YOLO  opus-5.5 · high ─╮");
+	assert.equal(plain(rows[1]), "╭─ ✿ prompt ─────────────── ● SUPER-YOLO  opus-5.5 · high ─╮");
 	assert.equal(plain(rows[2]), `│ › hola${" ".repeat(50)} │`);
 	assert.equal(plain(rows[3]), `╰${"─".repeat(58)}╯`);
 });
@@ -444,8 +445,8 @@ test("S96 with Gentle Shell's hint the labels drop before the hint, then the hin
 	assert.equal(rule(21, { label: "exploring…" }), "╭─ ✿ exploring… ────╮", "the box beats the prefix");
 });
 
-test("S96 no `ODD ` for waiting for input, working, queued or any other label", () => {
-	for (const label of ["waiting for input", "working…", "queued", "explore · 0:12", "exploring", "implementi…", "ODD exploring…"]) {
+test("S96 no `ODD ` for an idle label, working, queued or any other label", () => {
+	for (const label of ["esperando entrada", "working…", "queued", "explore · 0:12", "exploring", "implementi…", "ODD exploring…"]) {
 		const row = plain(boxPromptRows(gentleRows(96, { label }), 100, 0, LABELS).rows[0]);
 		assert.ok(row.startsWith(`╭─ ✿ ${label} ─`), row);
 	}
@@ -463,9 +464,11 @@ test("S96 without the clock (potato) `ODD ` is painted in Gentle Shell's label g
 // aparece y cuando empezas a trabjar aparece": Gentle Shell's idle label (lib/shell-prompt.ts
 // panelPromptRule, `waiting for input`) is long, so on a phone it pushed the labels off the rule.
 
-const phoneRule = (width: number, options: GentleOptions = {}, labels: object = LABELS) => plain(boxPromptRows(gentleRows(width - FRAME_COLUMNS, options), width, 0, labels).rows[0]);
+// The idle label here is a long one of its own: Gentle Shell's `waiting for input` is retitled `prompt` (S8), a short title the ladder rarely drops.
+const LONG_IDLE = "esperando entrada";
+const phoneRule = (width: number, options: GentleOptions = {}, labels: object = LABELS) => plain(boxPromptRows(gentleRows(width - FRAME_COLUMNS, { label: LONG_IDLE, ...options }), width, 0, labels).rows[0]);
 
-test("phone: too tight for `waiting for input` and the labels, the idle label's words drop and the petal keeps the labels", () => {
+test("phone: too tight for a long idle label and the labels, the idle label's words drop and the petal keeps the labels", () => {
 	assert.equal(phoneRule(45), `╭─ ✿ ${"─".repeat(7)} ● SUPER-YOLO  opus-5.5 · high ─╮`);
 	assert.equal(phoneRule(50), `╭─ ✿ ${"─".repeat(12)} ● SUPER-YOLO  opus-5.5 · high ─╮`);
 	assert.equal(phoneRule(39), "╭─ ✿ ─ ● SUPER-YOLO  opus-5.5 · high ─╮", "one fill column is enough");
@@ -491,45 +494,45 @@ test("phone: `working…` keeps its words; the labels compact or show exactly as
 	assert.equal(phoneRule(45, { label: "exploring…" }), `╭─ ✿ ODD exploring… ${"─".repeat(9)} ● SUPER-YOLO ─╮`);
 });
 
-test("`waiting for input` keeps its words when the labels fit beside it, and with no labels to keep", () => {
-	assert.equal(phoneRule(57), "╭─ ✿ waiting for input ─ ● SUPER-YOLO  opus-5.5 · high ─╮");
-	assert.equal(phoneRule(60), "╭─ ✿ waiting for input ──── ● SUPER-YOLO  opus-5.5 · high ─╮");
-	assert.equal(phoneRule(45, {}, {}), `╭─ ✿ waiting for input ${"─".repeat(21)}╮`, "no model: nothing to make room for");
+test("a long idle label keeps its words when the labels fit beside it, and with no labels to keep", () => {
+	assert.equal(phoneRule(57), "╭─ ✿ esperando entrada ─ ● SUPER-YOLO  opus-5.5 · high ─╮");
+	assert.equal(phoneRule(60), "╭─ ✿ esperando entrada ──── ● SUPER-YOLO  opus-5.5 · high ─╮");
+	assert.equal(phoneRule(45, {}, {}), `╭─ ✿ esperando entrada ${"─".repeat(21)}╮`, "no model: nothing to make room for");
 	// Labels and hint fit beside it: the bytes are the ones painted before.
 	const box = boxPromptRows(gentleRows(76, { hint: "esc again to clear" }), 80, 0, LABELS);
-	assert.ok(box.rows[0].includes(gsLabel("waiting for input")), "Gentle Shell's label as it painted it");
-	assert.equal(plain(box.rows[0]), "╭─ ✿ waiting for input ──── ● SUPER-YOLO  opus-5.5 · high  esc again to clear ─╮");
+	assert.ok(box.rows[0].includes(gsLabel("prompt")), "Gentle Shell's idle label retitled, in the color it painted it");
+	assert.equal(plain(box.rows[0]), "╭─ ✿ prompt ─────────────── ● SUPER-YOLO  opus-5.5 · high  esc again to clear ─╮");
 });
 
 test("too tight even for the petal and the full labels: the petal keeps the compacted labels (S3)", () => {
 	assert.equal(phoneRule(38), "╭─ ✿ ─── ● SUPER-YOLO opus-5.5·high ─╮");
 	assert.equal(phoneRule(30), `╭─ ✿ ${"─".repeat(9)} ● SUPER-YOLO ─╮`);
 	assert.equal(phoneRule(38, { hint: "INSERT" }), "╭─ ✿ ─── ● SUPER-YOLO opus-5.5·high ─╮", "idle, the labels beat the hint, as at 45");
-	// Nothing of ours fits even alone: `waiting for input` stays, as before.
-	assert.equal(phoneRule(30, {}, { modelId: "claude-opus-5-5-very-long-preview-build" }), "╭─ ✿ waiting for input ──────╮");
+	// Nothing of ours fits even alone: the long idle label stays, as before.
+	assert.equal(phoneRule(30, {}, { modelId: "claude-opus-5-5-very-long-preview-build" }), "╭─ ✿ esperando entrada ──────╮");
 });
 
 // S2: "Gentle Shell en otro idioma o con textos propios: el arreglo del móvil reconoce solo el texto
 // exacto `waiting for input`." Gentle Shell paints its idle label whole and every busy label as a
 // scan, an ODD phase, `queued` or Pi's scroll indicator: any other whole label is idle, whatever its words.
 
-test("S2 a translated idle label gets the same petal-only rule as `waiting for input`, at every width", () => {
+test("S2 a translated idle label gets the same petal-only rule as any long idle label, at every width", () => {
 	assert.equal(phoneRule(45, { label: "esperando entrada" }), `╭─ ✿ ${"─".repeat(7)} ● SUPER-YOLO  opus-5.5 · high ─╮`);
 	assert.equal(phoneRule(60, { label: "esperando entrada" }), "╭─ ✿ esperando entrada ──── ● SUPER-YOLO  opus-5.5 · high ─╮", "room for both: its words stay");
-	// The same length as `waiting for input`: the rule is the same with its words swapped.
+	// Another idle label of the same length: the rule is the same with its words swapped.
 	for (let width = 26; width <= 80; width++) {
 		for (const options of [{}, { hint: "INSERT" }, { button: true, hint: "INSERT" }]) {
-			const english = phoneRule(width, options);
-			assert.equal(phoneRule(width, { ...options, label: "esperando entrada" }), english.replace("waiting for input", "esperando entrada"), `${width} ${JSON.stringify(options)}`);
+			const english = phoneRule(width, { ...options, label: "ready for message" });
+			assert.equal(phoneRule(width, { ...options, label: "esperando entrada" }), english.replace("ready for message", "esperando entrada"), `${width} ${JSON.stringify(options)}`);
 		}
 	}
 });
 
-test("S2 a clipped idle label (`waiting for i…`, Gentle Shell's narrow fullscreen) and a custom one drop their words like the full one", () => {
-	assert.equal(phoneRule(45, { label: "waiting for i…", button: true }), `╭─ ✿ ${"─".repeat(7)} ● SUPER-YOLO  opus-5.5 · high ─╮`);
+test("S2 a clipped idle label (`esperando e…`) and a custom one drop their words like the full one", () => {
+	assert.equal(phoneRule(45, { label: "esperando e…", button: true }), `╭─ ✿ ${"─".repeat(7)} ● SUPER-YOLO  opus-5.5 · high ─╮`);
 	assert.equal(phoneRule(50, { label: "type a message to begin" }), `╭─ ✿ ${"─".repeat(12)} ● SUPER-YOLO  opus-5.5 · high ─╮`);
 	assert.equal(phoneRule(70, { label: "type a message to begin" }), `╭─ ✿ type a message to begin ${"─".repeat(8)} ● SUPER-YOLO  opus-5.5 · high ─╮`, "room for both: its words stay");
-	assert.equal(phoneRule(45, { label: "waiting for i…", button: true }, {}), `╭─ ✿ waiting for i… ${"─".repeat(24)}╮`, "no model: nothing to make room for");
+	assert.equal(phoneRule(45, { label: "esperando e…", button: true }, {}), `╭─ ✿ esperando e… ${"─".repeat(26)}╮`, "no model: nothing to make room for");
 });
 
 test("S2 busy labels keep their words: a scan in any language, `queued`, a clipped busy label, Pi's scroll indicator", () => {
@@ -605,14 +608,14 @@ test("S3 with Gentle Shell's hint: each step is tried beside it first; working, 
 // Vivid labels S3: the labels Fisi Dock paints on the rule take the vivid version of their color.
 test("the mode, its dot and the effort draw vivid, the ODD wave passes in pastel; the model, the frame and Gentle Shell's own colors stay (S3)", () => {
 	const box = boxPromptRows(gentleRows(56, { text: ["hello"] }), 60, 0, LABELS);
-	assert.equal(plain(box.rows[0]), "╭─ ✿ waiting for input ──── ● SUPER-YOLO  opus-5.5 · high ─╮", "the same words and layout");
+	assert.equal(plain(box.rows[0]), "╭─ ✿ prompt ─────────────── ● SUPER-YOLO  opus-5.5 · high ─╮", "the same words and layout");
 	const rule = box.rows[0];
 	assert.ok(rule.includes(`${fgCode(vivid(palette.red))}●`), "the dot vivid red");
 	assert.ok(rule.includes(`\x1b[1m${fgCode(vivid(palette.red))}SUPER-YOLO`), "the mode bold in vivid red");
 	assert.ok(rule.includes(`${fgCode(vivid(palette.blue))}high`), "the effort vivid blue");
 	assert.ok(!rule.includes(fgCode(palette.red)) && !rule.includes(fgCode(palette.blue)), "no pastel red or blue left");
 	assert.ok(rule.includes(`${fgCode(palette.muted)}opus-5.5`), "the gray model stays muted");
-	assert.ok(rule.startsWith(`${gray}╭─ `) && rule.includes(PETAL) && rule.includes(gsLabel("waiting for input")), "the frame, Gentle Shell's petal and label stay");
+	assert.ok(rule.startsWith(`${gray}╭─ `) && rule.includes(PETAL) && rule.includes(gsLabel("prompt")), "the frame, Gentle Shell's petal and label stay");
 	// The wave's head and its softer tone, at a moment the head is on `DD `.
 	const working = boxPromptRows(gentleRows(56, { label: "checking…", scan: true }), 60, 0, LABELS, WAVE_STEP_MS * 5).rows[0];
 	assert.ok(plain(working).startsWith("╭─ ") && plain(working).includes(" ODD checking… "), "the words stay");
@@ -763,7 +766,7 @@ test("S3 faded: classic's geometry and labels; the top and bottom fade by column
 		}
 	}
 	const rule = boxPromptRows(gentleRows(56, { text: ["hello"] }), 60, 0, LABELS, undefined, undefined, "faded").rows[0];
-	assert.ok(rule.includes(PETAL) && rule.includes(gsLabel("waiting for input")), "Gentle Shell's petal and label as it painted them");
+	assert.ok(rule.includes(PETAL) && rule.includes(gsLabel("prompt")), "Gentle Shell's petal and label as it painted them");
 	assert.ok(rule.includes(`${fgCode(vivid(palette.red))}●`) && rule.includes(`${fgCode(vivid(palette.blue))}high`) && rule.includes(`${fgCode(palette.muted)}opus-5.5`), "the labels keep their colors");
 	const selected = boxPromptRows(gentleRows(36, { text: ["abc"], bottom: " 3 chars selected - Del deletes - Alt+a select all " }), 40, 0, {}, undefined, undefined, "faded").rows.at(-1)!;
 	assert.equal(plain(selected), "╰─ 3 chars selected - Del deletes - … ─╯");
@@ -784,7 +787,7 @@ test("S3 none: the labels on a fading top rule in their places; no sides, no bot
 	const at40 = boxPromptRows(gentleRows(36, { text: ["first", "", "third"] }), 40, 0, {}, undefined, undefined, "none");
 	assert.equal(at40.boxed, true);
 	assert.deepEqual(at40.rows.map(plain), [
-		`── ✿ waiting for input ${"─".repeat(17)}`,
+		`── ✿ prompt ${"─".repeat(28)}`,
 		`  ${"› first".padEnd(36)}  `,
 		" ".repeat(40),
 		`  ${"  third".padEnd(36)}  `,
@@ -793,7 +796,7 @@ test("S3 none: the labels on a fading top rule in their places; no sides, no bot
 	const classic = boxPromptRows(rows, 60, 0, LABELS);
 	const none = boxPromptRows(rows, 60, 0, LABELS, undefined, undefined, "none");
 	assert.deepEqual(none.rows.map(plain), [
-		"── ✿ waiting for input ──── ● SUPER-YOLO  opus-5.5 · high ──",
+		"── ✿ prompt ─────────────── ● SUPER-YOLO  opus-5.5 · high ──",
 		`  ${"› hello".padEnd(56)}  `,
 		plain(rows.at(-1)!),
 	]);
@@ -804,7 +807,7 @@ test("S3 none: the labels on a fading top rule in their places; no sides, no bot
 	assert.ok(none.rows[1].includes(rows[1]), "Gentle Shell's row bytes inside");
 	for (const row of none.rows.slice(0, -1)) assert.equal(visibleWidth(row), 60);
 	const dashes = frameColors(none.rows[0]);
-	assert.equal(dashes.length, 8, "the corners turned dashes, the fill and the end");
+	assert.equal(dashes.length, 19, "the corners turned dashes, the fill and the end");
 	for (const [column, color] of dashes) assert.equal(color, fade(column, 60), `rule col ${column}`);
 	assert.equal(new Map(dashes).get(0), fgCode(BACKGROUND), "the rule sinks into the background at its ends");
 	assert.ok(none.rows[0].includes(PETAL) && none.rows[0].includes(`${fgCode(vivid(palette.red))}●`), "labels keep their colors");
@@ -814,7 +817,7 @@ test("S3 none: the labels on a fading top rule in their places; no sides, no bot
 	assert.equal(plain(selected.rows.at(-1)!), `   ${"3 chars selected - Del deletes - …".padEnd(37)}`);
 	assert.equal(selected.rows.length, 3);
 	// Gentle Shell's hint stays on the rule.
-	assert.equal(plain(boxPromptRows(gentleRows(76, { hint: "esc again to clear" }), 80, 0, LABELS, undefined, undefined, "none").rows[0]), "── ✿ waiting for input ──── ● SUPER-YOLO  opus-5.5 · high  esc again to clear ──");
+	assert.equal(plain(boxPromptRows(gentleRows(76, { hint: "esc again to clear" }), 80, 0, LABELS, undefined, undefined, "none").rows[0]), "── ✿ prompt ─────────────── ● SUPER-YOLO  opus-5.5 · high  esc again to clear ──");
 });
 
 test("S3 the wrapper reads the frames per frame; with none a click under the text reaches Gentle Shell's row under its blank row", () => {
@@ -876,4 +879,19 @@ test("look-more S4 the clock petal and the wave on the rule follow the accent; t
 	assert.ok(pinkRule.includes(wavePetal(at)), "read per frame");
 	const defaults = wrapPromptFactory(factory, { painting: () => true, labels: () => LABELS, waveAt: () => at })(undefined, undefined, undefined);
 	assert.equal(defaults.render(60)[0], pinkRule, "no accent dep: pink");
+});
+
+// S8 (gentle-shell-canvas-parity): the canvas titles the box `prompt`; Gentle Shell's idle `waiting for input` gives way to it.
+test("S8 Gentle Shell's idle `waiting for input` (whole or clipped) is titled `prompt`, in the color it painted it; busy and custom labels keep their words", () => {
+	assert.equal(phoneRule(56, { label: "waiting for input" }), "╭─ ✿ prompt ─────────── ● SUPER-YOLO  opus-5.5 · high ─╮");
+	const clipped = boxPromptRows(gentleRows(56, { label: "waiting for i…", button: true }), 60, 0, LABELS);
+	assert.ok(plain(clipped.rows[0]).startsWith("╭─ ✿ prompt ─"), plain(clipped.rows[0]));
+	assert.ok(clipped.rows[0].includes(gsLabel("prompt")), "the idle label's own paint carries over");
+	for (const label of ["working…", "queued", "exploring…", "↑ 3 more", "type a message to begin", "wait", "waiting"]) {
+		const row = plain(boxPromptRows(gentleRows(96, { label }), 100, 0, LABELS).rows[0]);
+		assert.ok(!row.includes("prompt"), `${label}: ${row}`);
+	}
+	const working = plain(boxPromptRows(gentleRows(96, { label: "waiting for input", scan: true }), 100, 0, LABELS, WAVE_STEP_MS).rows[0]);
+	assert.ok(working.includes("waiting for input") && !working.includes("prompt"), "a scan is busy: it keeps its words");
+	for (let width = 31; width <= 80; width++) assert.equal(visibleWidth(phoneRule(width, { label: "waiting for input" })), width, `${width}`);
 });

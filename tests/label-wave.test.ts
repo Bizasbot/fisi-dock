@@ -81,7 +81,7 @@ test("the box paints a scanning label by the time, whatever step Gentle Shell's 
 test("the box leaves an idle label as Gentle Shell painted it, and any label without a time (S90)", () => {
 	const quiet = boxPromptRows(idle(76, "waiting for input"), 80, 0, LABELS, WAVE_STEP_MS);
 	assert.equal(quiet.scanning, false);
-	assert.ok(quiet.rows[0].includes("\x1b[2mwaiting for input"), "carried over as painted");
+	assert.ok(quiet.rows[0].includes("\x1b[2mprompt"), "carried over as painted");
 	const short = boxPromptRows(idle(76, "queued"), 80, 0, LABELS, WAVE_STEP_MS);
 	assert.equal(short.scanning, false, "a short idle label is not a scan");
 	const timeless = boxPromptRows(scanned(76, "exploring…", 3), 80, 0, LABELS);

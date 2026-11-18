@@ -10,6 +10,8 @@
 
 ### Changed
 
+- The prompt box titles its top rule `prompt`, like the canvas artboard, where Gentle Shell paints its idle `waiting for input` (whole or clipped); a working label, an ODD phase, `queued` and any translated or custom idle label keep their words. The `↵ línea · ↵↵ enviar` hint of the artboard is not drawn: Enter sends.
+- The RDD row while watching reads `watching reviews · high-risk changes`, the artboard's wording.
 - Tested with Gentle Shell 4.8.0.
 
 ## 0.5.1

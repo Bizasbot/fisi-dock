@@ -43,6 +43,9 @@ const ODD_PHASES = [
 ];
 const ODD_PHASE_LABEL = new RegExp(`^(?:${ODD_PHASES.join("|")})…$`);
 const ODD_PREFIX = "ODD ";
+/** Gentle Shell's own idle label (lib/shell-prompt.ts panelPromptRule); the canvas titles the box `prompt` instead (S8). */
+const IDLE_LABEL = "waiting for input";
+const PROMPT_TITLE = "prompt";
 /** Gentle Shell's busy labels it may paint whole (lib/shell-prompt.ts STATE_LABEL, oddPhaseLabel): `queued`, and `working…` or a phase in a theme without colors. */
 const BUSY_LABELS = [
 	"working…", "queued",
@@ -176,7 +179,14 @@ export function boxPromptRows(rows: string[], width: number, topRowCount: number
 	// Every petal frame is one column like Gentle Shell's, so the rule never shifts (S97).
 	const clockPetal = wave ? wavePetal(waveAt, colors, accent) : undefined;
 	const petal = clockPetal !== undefined && visibleWidth(clockPetal) === glyphWidth ? clockPetal : sliceColumns(rule, 2, 2 + glyphWidth);
-	const bare: Segment = { plain: label, styled: wave ? waveLabel(label, waveAt, accent, colors) : gentleLabel };
+	// Idle, Gentle Shell's `waiting for input` (whole or clipped, `waiting for i…`) gives way to the canvas title `prompt`;
+	// a busy, translated or custom label keeps its words.
+	const clippedLabel = label.endsWith("…");
+	const stem = clippedLabel ? label.slice(0, -1) : label;
+	const retitled = !scanning && (clippedLabel ? stem.length >= 2 && IDLE_LABEL.startsWith(stem) : label === IDLE_LABEL) && isIdleLabel(label, scanning);
+	const bare: Segment = retitled
+		? { plain: PROMPT_TITLE, styled: gentleLabel.includes(label) ? gentleLabel.replace(label, PROMPT_TITLE) : fg(tone(palette.muted, colors), PROMPT_TITLE) }
+		: { plain: label, styled: wave ? waveLabel(label, waveAt, accent, colors) : gentleLabel };
 	const prefixed: Segment | undefined = ODD_PHASE_LABEL.test(label)
 		? { plain: ODD_PREFIX + label, styled: wave ? waveLabel(ODD_PREFIX + label, waveAt, accent, colors) : fg(tone(palette.muted, colors), ODD_PREFIX) + gentleLabel }
 		: undefined;

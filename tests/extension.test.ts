@@ -290,7 +290,7 @@ test("with Gentle Shell's marked editor, session_start wraps it: the editor pain
 	const editor = wrapper(sim.tui, {}, {});
 	const rows = editor.render(60).map(plain);
 	assert.deepEqual(rows, [
-		`╭─ ✿ waiting for input ${"─".repeat(18)} opus-5.5 · high ─╮`,
+		`╭─ ✿ prompt ${"─".repeat(29)} opus-5.5 · high ─╮`,
 		`│ › hola${" ".repeat(50)} │`,
 		`╰${"─".repeat(58)}╯`,
 	]);
@@ -516,7 +516,7 @@ test("the RDD switch comes from `gentle-ai review mode status --json` at session
 	const title = () => railOf(sim)(47).find((line) => line.startsWith("╭─ RDD"));
 	await waitFor(() => title() !== undefined);
 	assert.match(title()!, /^╭─ RDD ─+ on ─╮$/);
-	assert.deepEqual(rddRows(railOf(sim)(47)), ["│ ● watching · reviews high-risk changes │"]);
+	assert.deepEqual(rddRows(railOf(sim)(47)), ["│ ● watching reviews · high-risk changes │"]);
 	assert.equal(commands.length, 1, "one read at session start");
 	assert.ok(isGentleAi(commands[0][0]) && commands[0][0].startsWith(FAKE_PACKAGE), `the bundled binary: ${commands[0][0]}`);
 	assert.deepEqual(commands[0].slice(1), ["review", "mode", "status", "--cwd", "E:\\DEV\\app", "--json"], "read-only, for the session folder");

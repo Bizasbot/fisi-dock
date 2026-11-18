@@ -343,8 +343,8 @@ test("RDD section: vivid rose title right after ODD, `on` vivid green / `off` mu
 
 test("RDD idle rows: on says what it watches, off says it is off (S50)", () => {
 	const on = rddPanel({ footer: { cost: 0, rdd: "on" } });
-	assert.deepEqual(sectionBody(on, "RDD").map((line) => line.replace(/ +│$/, "")), ["│ ● watching · reviews high-risk changes"]);
-	assert.ok(on.some((line) => line.includes(`${fgCode(palette.muted)}watching · reviews high-risk changes`)), "muted text");
+	assert.deepEqual(sectionBody(on, "RDD").map((line) => line.replace(/ +│$/, "")), ["│ ● watching reviews · high-risk changes"]);
+	assert.ok(on.some((line) => line.includes(`${fgCode(palette.muted)}watching reviews · high-risk changes`)), "muted text");
 	const off = rddPanel({ footer: { cost: 0, rdd: "off" } });
 	assert.deepEqual(sectionBody(off, "RDD").map((line) => line.replace(/ +│$/, "")), ["│ ○ off · changes are not reviewed"]);
 	assert.ok(off.some((line) => line.includes(`${fgCode(palette.muted)}off · changes are not reviewed`)), "muted text");
@@ -2430,7 +2430,7 @@ test("rail sections are boxes again, edge to edge with no gap rows (sidebar-chro
 		row("○ ready · phases show while I work"),
 		bottom,
 		`╭─ RDD ${"─".repeat(34)} on ─╮`,
-		row("● watching · reviews high-risk changes"),
+		row("● watching reviews · high-risk changes"),
 		bottom,
 		`╭─ todo ${"─".repeat(38)}╮`,
 		row("○ no tasks · the list shows while I plan"),
@@ -2546,7 +2546,7 @@ test("classic frames draw today's box geometry in the flat frame gray (S3)", () 
 		row("○ ready · phases show while I work"),
 		bottom,
 		`╭─ RDD ${"─".repeat(34)} on ─╮`,
-		row("● watching · reviews high-risk changes"),
+		row("● watching reviews · high-risk changes"),
 		bottom,
 		`╭─ todo ${"─".repeat(38)}╮`,
 		row("○ no tasks · the list shows while I plan"),
@@ -2573,7 +2573,7 @@ test("no-box frames draw each title on a rule, rows two cells in and one blank r
 		row("○ ready · phases show while I work"),
 		" ".repeat(47),
 		` RDD ${"─".repeat(38)} on `,
-		row("● watching · reviews high-risk changes"),
+		row("● watching reviews · high-risk changes"),
 		" ".repeat(47),
 		` todo ${"─".repeat(40)} `,
 		row("○ no tasks · the list shows while I plan"),

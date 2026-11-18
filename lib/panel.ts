@@ -678,7 +678,7 @@ function rddSection(rdd: RddInfo | undefined, mode: FooterInfo["rdd"], width: nu
 	const section = (rows: Row[]): Section => ({ title: "RDD", color: palette.rose, ...(right ? { right } : {}), rows });
 	if (reviews.length === 0) {
 		// One-column dot (S57): the 🌹 emoji has no fixed width across terminals and broke the frame.
-		if (mode === "on") return section([{ text: item(fg(palette.green, "●"), (rest) => muted(ellipsize("watching · reviews high-risk changes", rest)), width) }]);
+		if (mode === "on") return section([{ text: item(fg(palette.green, "●"), (rest) => muted(ellipsize("watching reviews · high-risk changes", rest)), width) }]);
 		return section([{ text: item(fg(palette.faint, "○"), (rest) => muted(ellipsize("off · changes are not reviewed", rest)), width) }]);
 	}
 	const shown = reviews.slice(-ODD_CAP);
